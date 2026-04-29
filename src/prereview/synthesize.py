@@ -61,12 +61,143 @@ def _verdict_label(v: Verdict) -> str:
     }[v]
 
 
+# Severity ordering for sorting groups and picking a headline verdict within a
+# group. Lower number = more severe / higher in the list.
+_SEVERITY: dict[Verdict, int] = {
+    Verdict.TARGET_UNAVAILABLE: 0,
+    Verdict.METADATA_MISMATCH: 1,
+    Verdict.DOES_NOT_SUPPORT: 2,
+    Verdict.PARTIALLY_SUPPORTS: 3,
+    Verdict.ABSTRACT_TOO_THIN: 4,
+    Verdict.SUPPORTS: 5,
+}
+
+_BIB_LEVEL_VERDICTS = (Verdict.METADATA_MISMATCH, Verdict.TARGET_UNAVAILABLE)
+
+
+def _group_by_bibkey(
+    verifications: list[VerificationResult],
+) -> dict[str, list[VerificationResult]]:
+    """Group problematic verifications by bibkey, preserving site order."""
+    groups: dict[str, list[VerificationResult]] = {}
+    for v in verifications:
+        if not _is_problematic(v):
+            continue
+        groups.setdefault(v.reference.ref_id, []).append(v)
+    return groups
+
+
+def _headline_verdict(sites: list[VerificationResult]) -> Verdict:
+    return min((s.verdict for s in sites), key=lambda v: _SEVERITY[v])
+
+
+def _is_bib_level(sites: list[VerificationResult]) -> bool:
+    """True if the cause is the .bib entry itself (broken DOI / ghost reference)
+    rather than a per-site mis-attachment."""
+    return any(s.verdict in _BIB_LEVEL_VERDICTS for s in sites)
+
+
+def _render_resolved_record(canonical) -> list[str]:
+    if canonical is None:
+        return [
+            "**Resolved record:** _none — this entry could not be matched in "
+            "Crossref, Semantic Scholar, arXiv, or OpenAlex._"
+        ]
+    lines = ["**Resolved record:**", ""]
+    lines.append(f"- Source: `{canonical.source}`")
+    lines.append(f"- Title: {canonical.title or '_(unknown)_'}")
+    if canonical.authors:
+        lines.append("- Authors: " + ", ".join(canonical.authors[:8]))
+    if canonical.year:
+        lines.append(f"- Year: {canonical.year}")
+    if canonical.venue:
+        lines.append(f"- Venue: {canonical.venue}")
+    if canonical.doi:
+        lines.append(f"- DOI: [{canonical.doi}](https://doi.org/{canonical.doi})")
+    if canonical.url and not canonical.doi:
+        lines.append(f"- URL: {canonical.url}")
+    return lines
+
+
+def _render_group(index: int, ref_id: str, sites: list[VerificationResult]) -> list[str]:
+    """Render a single bibkey group as Markdown lines."""
+    bib_level = _is_bib_level(sites)
+    headline = _headline_verdict(sites)
+    ref = sites[0].reference
+    canonical = sites[0].canonical
+    n = len(sites)
+
+    out: list[str] = []
+    if bib_level:
+        out.append(f"### {index}. `{ref_id}` — {_verdict_label(headline)}")
+    elif n == 1:
+        out.append(f"### {index}. `{ref_id}` — {_verdict_label(headline)}")
+    else:
+        out.append(
+            f"### {index}. `{ref_id}` — {n} cite sites flagged "
+            f"(worst: {_verdict_label(headline)})"
+        )
+    out.append("")
+    out.append(f"**Bibliography entry (verbatim):** {_quote(ref.raw_text)}")
+    out.append("")
+    out.extend(_render_resolved_record(canonical))
+    out.append("")
+
+    if bib_level:
+        # All sites share a single root cause: the .bib entry. Show the rationale
+        # once, then list each cite site compactly.
+        primary = next((s for s in sites if s.verdict in _BIB_LEVEL_VERDICTS), sites[0])
+        evidence_tag = "abstract-only" if primary.abstract_only else "full-text"
+        out.append(
+            f"**Verdict:** {_verdict_label(primary.verdict)} _(evidence: {evidence_tag})_"
+        )
+        out.append("")
+        out.append(f"**Rationale:** {primary.rationale}")
+        out.append("")
+        out.append(f"**Cited at {n} site{'s' if n != 1 else ''}:**")
+        out.append("")
+        for j, s in enumerate(sites, start=1):
+            out.append(f"{j}. {_quote(s.citation.sentence)}")
+        out.append("")
+    elif n == 1:
+        s = sites[0]
+        evidence_tag = "abstract-only" if s.abstract_only else "full-text"
+        out.append(f"**In-text sentence:** {_quote(s.citation.sentence)}")
+        out.append("")
+        out.append(f"**Verdict:** {_verdict_label(s.verdict)} _(evidence: {evidence_tag})_")
+        out.append("")
+        out.append(f"**Rationale:** {s.rationale}")
+        out.append("")
+    else:
+        out.append(
+            "The reference itself resolves correctly, but its cite sites have "
+            "varying support:"
+        )
+        out.append("")
+        sorted_sites = sorted(sites, key=lambda s: _SEVERITY[s.verdict])
+        for j, s in enumerate(sorted_sites, start=1):
+            evidence_tag = "abstract-only" if s.abstract_only else "full-text"
+            out.append(
+                f"**Site {j} — {_verdict_label(s.verdict)}** _(evidence: {evidence_tag})_"
+            )
+            out.append("")
+            out.append(f"- Sentence: {_quote(s.citation.sentence)}")
+            out.append(f"- Rationale: {s.rationale}")
+            out.append("")
+    return out
+
+
 def render_citation_issues(bundle: ReviewBundle) -> str:
-    """Markdown for the Citation issues section. Lists every problematic citation."""
+    """Markdown for the Citation issues section, grouped by bibkey.
+
+    Each unique bibkey gets one section. If the bib entry itself is the cause
+    (wrong DOI / ghost reference), every cite site is listed under one rationale.
+    Otherwise, each cite site's verdict and rationale are shown individually.
+    """
     out: list[str] = ["## Citation issues", ""]
 
-    flagged = [v for v in bundle.verifications if _is_problematic(v)]
-    if not flagged:
+    groups = _group_by_bibkey(bundle.verifications)
+    if not groups:
         out.append(
             "_No citation issues detected._ Every cited reference resolved against "
             "Crossref / Semantic Scholar / arXiv / OpenAlex, and every claim was "
@@ -75,54 +206,29 @@ def render_citation_issues(bundle: ReviewBundle) -> str:
         out.append("")
         return "\n".join(out)
 
-    counts: dict[str, int] = {}
-    for v in flagged:
-        counts[v.verdict.value] = counts.get(v.verdict.value, 0) + 1
+    sorted_keys = sorted(
+        groups.keys(),
+        key=lambda k: (_SEVERITY[_headline_verdict(groups[k])], k),
+    )
+    total_sites = sum(len(groups[k]) for k in sorted_keys)
+    bib_level = sum(1 for k in sorted_keys if _is_bib_level(groups[k]))
 
     out.append(
-        "The following citations were flagged. Every entry shows the in-text "
-        "sentence, the bibliography entry as the author wrote it, the canonical "
-        "record we resolved (if any), the verdict, and a one-sentence rationale."
+        f"**{len(sorted_keys)} unique reference{'s' if len(sorted_keys) != 1 else ''} "
+        f"flagged across {total_sites} cite site{'s' if total_sites != 1 else ''}.** "
+        f"{bib_level} of these {'are bibliography-entry issues (likely wrong DOI / ghost reference)' if bib_level != 1 else 'is a bibliography-entry issue (likely wrong DOI / ghost reference)'}; "
+        f"the rest are cite sites whose claim isn't fully supported by the cited paper."
     )
     out.append("")
-    out.append("**Summary of flags:** " + ", ".join(
-        f"{counts[k]}× {k.replace('_', ' ')}" for k in sorted(counts)
-    ))
+    out.append(
+        "Each entry shows the bibliography entry as the author wrote it, the "
+        "canonical record we resolved (if any), and the in-text sentence(s) "
+        "where it is cited."
+    )
     out.append("")
 
-    for i, v in enumerate(flagged, start=1):
-        out.append(f"### {i}. `{v.reference.ref_id}` — {_verdict_label(v.verdict)}")
-        out.append("")
-        out.append(f"**In-text sentence:** {_quote(v.citation.sentence)}")
-        out.append("")
-        out.append(f"**Bibliography entry (verbatim):** {_quote(v.reference.raw_text)}")
-        out.append("")
-        if v.canonical is not None:
-            out.append("**Resolved record:**")
-            out.append("")
-            out.append(f"- Source: `{v.canonical.source}`")
-            out.append(f"- Title: {v.canonical.title or '_(unknown)_'}")
-            if v.canonical.authors:
-                out.append("- Authors: " + ", ".join(v.canonical.authors[:8]))
-            if v.canonical.year:
-                out.append(f"- Year: {v.canonical.year}")
-            if v.canonical.venue:
-                out.append(f"- Venue: {v.canonical.venue}")
-            if v.canonical.doi:
-                out.append(f"- DOI: [{v.canonical.doi}](https://doi.org/{v.canonical.doi})")
-            if v.canonical.url and not v.canonical.doi:
-                out.append(f"- URL: {v.canonical.url}")
-        else:
-            out.append(
-                "**Resolved record:** _none — this entry could not be matched in "
-                "Crossref, Semantic Scholar, arXiv, or OpenAlex._"
-            )
-        out.append("")
-        evidence_tag = "abstract-only" if v.abstract_only else "full-text"
-        out.append(f"**Verdict:** {_verdict_label(v.verdict)} _(evidence: {evidence_tag})_")
-        out.append("")
-        out.append(f"**Rationale:** {v.rationale}")
-        out.append("")
+    for i, key in enumerate(sorted_keys, start=1):
+        out.extend(_render_group(i, key, groups[key]))
 
     return "\n".join(out)
 
@@ -181,13 +287,30 @@ def _prose_prompt(bundle: ReviewBundle) -> str:
         # Take the head and tail; the middle is rarely as informative for a review.
         body_text = body_text[:120_000] + "\n\n[...truncated middle...]\n\n" + body_text[-60_000:]
 
-    flagged = [v for v in bundle.verifications if _is_problematic(v)]
-    flag_summary = "\n".join(
-        f"- `{v.reference.ref_id}` ({_verdict_label(v.verdict)}): {v.rationale}"
-        for v in flagged[:30]
-    ) or "_None — every cited reference checked out._"
-    if len(flagged) > 30:
-        flag_summary += f"\n- ... and {len(flagged) - 30} more"
+    groups = _group_by_bibkey(bundle.verifications)
+    sorted_keys = sorted(
+        groups.keys(),
+        key=lambda k: (_SEVERITY[_headline_verdict(groups[k])], k),
+    )
+
+    def _summary_line(key: str) -> str:
+        sites = groups[key]
+        headline = _headline_verdict(sites)
+        n = len(sites)
+        site_phrase = f"{n} cite site{'s' if n != 1 else ''}"
+        primary = next(
+            (s for s in sites if s.verdict in _BIB_LEVEL_VERDICTS),
+            min(sites, key=lambda s: _SEVERITY[s.verdict]),
+        )
+        return (
+            f"- `{key}` ({_verdict_label(headline)}, {site_phrase}): {primary.rationale}"
+        )
+
+    flag_summary = "\n".join(_summary_line(k) for k in sorted_keys[:30]) or (
+        "_None — every cited reference checked out._"
+    )
+    if len(sorted_keys) > 30:
+        flag_summary += f"\n- ... and {len(sorted_keys) - 30} more"
 
     return f"""You are reviewing this draft paper for a top venue. Write a structured review.
 

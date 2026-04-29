@@ -39,7 +39,7 @@ def _make_bundle(verifications: list[VerificationResult]) -> ReviewBundle:
     )
 
 
-def _v(verdict: Verdict, *, ref_id="1", canonical=True, abstract_only=False, rationale="rationale.") -> VerificationResult:
+def _v(verdict: Verdict, *, ref_id="1", canonical=True, abstract_only=False, rationale="rationale.", sentence="We claim X [1].") -> VerificationResult:
     ref = Reference(
         ref_id=ref_id,
         raw_text=f"[{ref_id}] Smith. A Toy Paper. 2023.",
@@ -47,7 +47,7 @@ def _v(verdict: Verdict, *, ref_id="1", canonical=True, abstract_only=False, rat
         title="A Toy Paper",
         year=2023,
     )
-    cit = Citation(ref_id=ref_id, sentence="We claim X [1].")
+    cit = Citation(ref_id=ref_id, sentence=sentence)
     can = (
         CanonicalRecord(
             source="crossref",
@@ -100,6 +100,73 @@ def test_render_citation_issues_clean_when_no_problems():
     bundle = _make_bundle([_v(Verdict.SUPPORTS, abstract_only=False, rationale="Body text confirms.")])
     md = syn.render_citation_issues(bundle)
     assert "No citation issues detected" in md
+
+
+def test_render_citation_issues_groups_bib_level_sites():
+    """A broken .bib entry cited at N sites should produce one section, not N."""
+    bundle = _make_bundle([
+        _v(
+            Verdict.METADATA_MISMATCH,
+            ref_id="broken",
+            sentence="First use of broken cite [broken].",
+            rationale="No author-surname overlap with resolved record.",
+        ),
+        _v(
+            Verdict.METADATA_MISMATCH,
+            ref_id="broken",
+            sentence="Second use of broken cite [broken].",
+            rationale="No author-surname overlap with resolved record.",
+        ),
+        _v(
+            Verdict.METADATA_MISMATCH,
+            ref_id="broken",
+            sentence="Third use of broken cite [broken].",
+            rationale="No author-surname overlap with resolved record.",
+        ),
+    ])
+    md = syn.render_citation_issues(bundle)
+
+    # Exactly one numbered section for the broken bibkey, not three.
+    assert md.count("### 1.") == 1
+    assert "### 2." not in md
+    # All three cite sites are still surfaced, under a single entry.
+    assert "First use of broken cite" in md
+    assert "Second use of broken cite" in md
+    assert "Third use of broken cite" in md
+    assert "Cited at 3 sites" in md
+    # Header summary mentions 1 unique reference / 3 cite sites.
+    assert "1 unique reference" in md
+    assert "3 cite sites" in md
+
+
+def test_render_citation_issues_site_level_multi_site():
+    """A bib entry that resolves correctly but is mis-attached to multiple
+    different claims should list each cite site's own verdict and rationale."""
+    bundle = _make_bundle([
+        _v(
+            Verdict.PARTIALLY_SUPPORTS,
+            ref_id="paper",
+            sentence="Mild claim about X [paper].",
+            rationale="Cited paper covers X tangentially.",
+        ),
+        _v(
+            Verdict.DOES_NOT_SUPPORT,
+            ref_id="paper",
+            sentence="Strong unrelated claim about Y [paper].",
+            rationale="Cited paper says nothing about Y.",
+        ),
+    ])
+    md = syn.render_citation_issues(bundle)
+
+    # One grouped section, both sites surfaced with their own verdicts.
+    assert md.count("### 1.") == 1
+    assert "2 cite sites flagged" in md
+    assert "Does not support" in md
+    assert "Partially supports" in md
+    assert "Mild claim about X" in md
+    assert "Strong unrelated claim about Y" in md
+    # Most-severe site listed first (does_not_support before partially_supports).
+    assert md.index("Strong unrelated claim about Y") < md.index("Mild claim about X")
 
 
 def test_render_methodology_mentions_models_and_counts():
