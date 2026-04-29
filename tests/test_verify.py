@@ -68,11 +68,51 @@ async def test_target_unavailable_when_canonical_none(cache):
 
 
 @pytest.mark.asyncio
-async def test_abstract_too_thin_when_no_text(cache):
+async def test_no_evidence_method_attribution_supports_from_metadata(cache, monkeypatch):
+    """When no abstract or PDF is available but the cite is a method
+    attribution (named tool, canonical record's title/authors match), the
+    role-aware prompt can return `supports` from title+authors alone."""
     can = _canonical(abstract=None, pdf_url=None)
+
+    captured = {}
+
+    async def fake_json(*, user, **_):
+        captured["user"] = user
+        return {
+            "role": "method_attribution",
+            "verdict": "supports",
+            "rationale": "Title and authors identify the canonical paper for the named tool.",
+        }
+
+    monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
+    async with Verifier(cache=cache) as v:
+        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+    assert r.verdict == Verdict.SUPPORTS
+    assert r.role == CitationRole.METHOD_ATTRIBUTION
+    assert r.abstract_only is True
+    # The placeholder makes the no-evidence state explicit to the model.
+    assert "no abstract or full text was retrievable" in captured["user"].lower()
+
+
+@pytest.mark.asyncio
+async def test_no_evidence_claim_support_returns_abstract_too_thin(cache, monkeypatch):
+    """When no evidence is available and the cite supports a specific factual
+    claim, the model should still return abstract_too_thin — the body would
+    be needed and we have nothing."""
+    can = _canonical(abstract=None, pdf_url=None)
+
+    async def fake_json(**_):
+        return {
+            "role": "claim_support",
+            "verdict": "abstract_too_thin",
+            "rationale": "Specific quantitative claim cannot be verified without evidence.",
+        }
+
+    monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
         r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
     assert r.verdict == Verdict.ABSTRACT_TOO_THIN
+    assert r.role == CitationRole.CLAIM_SUPPORT
     assert r.abstract_only is True
 
 

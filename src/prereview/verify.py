@@ -289,15 +289,13 @@ class Verifier:
             evidence = canonical.abstract
 
         if evidence is None or not evidence.strip():
-            return VerificationResult(
-                ref_id=reference.ref_id,
-                citation=citation,
-                reference=reference,
-                canonical=canonical,
-                verdict=Verdict.ABSTRACT_TOO_THIN,
-                rationale="No abstract or full text was available for the cited paper.",
-                abstract_only=True,
-            )
+            # Crossref/etc returned a canonical record but no abstract, and no
+            # OA PDF was findable. Don't short-circuit — let the role-aware
+            # prompt judge from title and authors alone. For method_attribution
+            # cites, title+authors are usually enough; for claim_support, the
+            # model will correctly return abstract_too_thin.
+            evidence = "(no abstract or full text was retrievable for this paper)"
+            abstract_only = True
 
         # Cache lookup. Key includes the evidence marker so that re-running
         # with full-text fetched (or with --no-fetch-cited) doesn't reuse the
