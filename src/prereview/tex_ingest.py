@@ -1,0 +1,511 @@
+"""Native ``.tex``/``.bib`` ingest mode.
+
+Why this exists: when a draft is in TeX source, every ``\\cite{key}`` and every
+bibliography entry is *explicit*. Parsing the source is far more reliable than
+PDF text extraction + LLM bibliography parsing, and it is deterministic, so the
+verifier judgements become the dominant source of variance instead of the
+ingest.
+
+This module produces the same :class:`IngestedPaper` shape as
+:mod:`prereview.ingest`, so the rest of the pipeline doesn't care which mode
+ran.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+from typing import Optional
+
+from .ingest import _surrounding_sentence
+from .models import Citation, IngestedPaper, Reference
+
+
+def _log(verbose: bool, msg: str) -> None:
+    if verbose:
+        print(f"[tex-ingest] {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# .bib parsing
+
+
+_BIB_ENTRY_HEAD = re.compile(r"@(\w+)\s*\{", re.IGNORECASE)
+
+
+def parse_bib(text: str) -> dict[str, dict[str, str]]:
+    """Parse a BibTeX file's text into ``{key: {field: value, "_type": ...}}``.
+
+    Tolerant of nested braces, quoted values, and trailing commas. Accent macros
+    like ``{\\"o}`` and inline command braces are stripped from values.
+    """
+    entries: dict[str, dict[str, str]] = {}
+    i = 0
+    while i < len(text):
+        m = _BIB_ENTRY_HEAD.search(text, i)
+        if not m:
+            break
+        entry_type = m.group(1).lower()
+        if entry_type in {"comment", "preamble", "string"}:
+            i = m.end()
+            continue
+        # Find the matching close brace for the entry body.
+        body_start = m.end()
+        depth = 1
+        j = body_start
+        while j < len(text) and depth > 0:
+            ch = text[j]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            j += 1
+        body = text[body_start : j - 1] if j > body_start else ""
+        i = j
+
+        comma = body.find(",")
+        if comma < 0:
+            continue
+        key = body[:comma].strip()
+        if not key:
+            continue
+        fields = _parse_bib_fields(body[comma + 1 :])
+        fields["_type"] = entry_type
+        entries[key] = fields
+    return entries
+
+
+_FIELD_HEAD = re.compile(r"(\w+)\s*=\s*", re.IGNORECASE)
+
+
+def _parse_bib_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    i = 0
+    while i < len(text):
+        # Skip whitespace and commas.
+        while i < len(text) and text[i] in " \t\n\r,":
+            i += 1
+        if i >= len(text):
+            break
+        m = _FIELD_HEAD.match(text, i)
+        if not m:
+            break
+        name = m.group(1).lower()
+        i = m.end()
+        if i >= len(text):
+            break
+
+        if text[i] == "{":
+            depth = 1
+            i += 1
+            start = i
+            while i < len(text) and depth > 0:
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                if depth > 0:
+                    i += 1
+            value = text[start:i]
+            i += 1  # consume closing brace
+        elif text[i] == '"':
+            i += 1
+            start = i
+            while i < len(text):
+                if text[i] == "\\" and i + 1 < len(text):
+                    i += 2
+                    continue
+                if text[i] == '"':
+                    break
+                i += 1
+            value = text[start:i]
+            i += 1  # consume closing quote
+        else:
+            # Bare value: identifier or number, possibly followed by '#' concatenations.
+            m2 = re.match(r"[\w\-]+", text[i:])
+            if not m2:
+                break
+            value = m2.group(0)
+            i += m2.end()
+        fields[name] = _clean_bib_value(value)
+    return fields
+
+
+def _clean_bib_value(s: str) -> str:
+    """Strip TeX accent macros, simple wrapping commands, stray braces, ws."""
+    # Drop common one-arg formatting commands but keep their argument.
+    for _ in range(3):
+        s = re.sub(r"\\(?:textbf|textit|emph|texttt|textsc|textsf|textrm)\{([^{}]*)\}", r"\1", s)
+    # Accent macros: \"{o} → o, \'{e} → e, \"o → o, etc.
+    s = re.sub(r"\\[`'\"^~=.]\{?(\w)\}?", r"\1", s)
+    # \ss → ss, \aa → aa, etc.
+    s = re.sub(r"\\(ss|aa|AA|oe|OE|ae|AE|o|O|l|L)\b", r"\1", s)
+    # Drop remaining backslash-words and stray braces.
+    s = re.sub(r"\\[a-zA-Z]+\*?", "", s)
+    s = s.replace("{", "").replace("}", "")
+    s = s.replace("~", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_bib_authors(s: str) -> list[str]:
+    """Split a BibTeX `author = { ... }` value into individual author full names."""
+    if not s:
+        return []
+    out: list[str] = []
+    for raw in re.split(r"\s+and\s+", s):
+        raw = raw.strip().strip(",")
+        if not raw:
+            continue
+        if "," in raw:
+            last, first = raw.split(",", 1)
+            full = f"{first.strip()} {last.strip()}".strip()
+        else:
+            full = raw
+        full = re.sub(r"\s+", " ", full)
+        if full:
+            out.append(full)
+    return out
+
+
+_ARXIV_INLINE = re.compile(r"arXiv\s*[:.]?\s*(\d{4}\.\d{4,5})", re.IGNORECASE)
+
+
+def bib_to_reference(key: str, fields: dict[str, str]) -> Reference:
+    title = fields.get("title")
+    year_str = fields.get("year") or ""
+    year: Optional[int] = None
+    m = re.search(r"\d{4}", year_str)
+    if m:
+        try:
+            year = int(m.group(0))
+        except ValueError:
+            year = None
+    venue = (
+        fields.get("journal")
+        or fields.get("booktitle")
+        or fields.get("series")
+        or fields.get("publisher")
+    )
+    arxiv_id: Optional[str] = None
+    for k in ("eprint", "archiveprefix", "journal", "note", "url"):
+        v = fields.get(k)
+        if v:
+            mm = _ARXIV_INLINE.search(v)
+            if mm:
+                arxiv_id = mm.group(1)
+                break
+            if k == "eprint" and re.match(r"^\d{4}\.\d{4,5}$", v):
+                arxiv_id = v
+                break
+
+    raw_parts = [f"@{fields.get('_type', 'misc')}{{{key}"]
+    for k in ("author", "title", "journal", "booktitle", "year", "publisher", "doi", "url"):
+        if fields.get(k):
+            raw_parts.append(f"  {k} = {{{fields[k]}}}")
+    raw_text = ",\n".join(raw_parts) + "\n}"
+
+    return Reference(
+        ref_id=key,
+        raw_text=raw_text,
+        authors=parse_bib_authors(fields.get("author", "")),
+        title=title,
+        year=year,
+        venue=venue,
+        doi=fields.get("doi"),
+        arxiv_id=arxiv_id,
+        url=fields.get("url"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# .tex stripping
+
+
+_CITE_CMDS = (
+    "cite",
+    "citep",
+    "citet",
+    "citealp",
+    "citealt",
+    "citeauthor",
+    "citeyear",
+    "citenum",
+    "parencite",
+    "textcite",
+    "fullcite",
+    "Citep",
+    "Citet",
+    "Cite",
+)
+
+_DROP_ENVS = (
+    "figure",
+    "figure*",
+    "table",
+    "table*",
+    "equation",
+    "equation*",
+    "align",
+    "align*",
+    "gather",
+    "gather*",
+    "tikzpicture",
+    "algorithm",
+    "algorithmic",
+    "verbatim",
+    "lstlisting",
+    "Verbatim",
+    "tabular",
+    "tabularx",
+    "array",
+    "matrix",
+    "thebibliography",
+)
+
+
+def strip_tex_to_text(text: str) -> str:
+    """Reduce .tex source to a plain-text body with ``[CITE:k1,k2]`` markers
+    in place of citation commands. Lossy on math, environments, and exotic
+    commands, but stable enough to find sentences around citations."""
+    # Strip comments (% to end of line, but not \%).
+    text = re.sub(r"(?<!\\)%[^\n]*", "", text)
+    # Cut to body only.
+    m = re.search(r"\\begin\s*\{document\}", text)
+    if m:
+        text = text[m.end():]
+    m = re.search(r"\\end\s*\{document\}", text)
+    if m:
+        text = text[: m.start()]
+
+    # Drop unwanted environments wholesale.
+    for env in _DROP_ENVS:
+        pat = r"\\begin\s*\{" + re.escape(env) + r"\}.*?\\end\s*\{" + re.escape(env) + r"\}"
+        text = re.sub(pat, " ", text, flags=re.DOTALL)
+
+    # Display math.
+    text = re.sub(r"\\\[.*?\\\]", " ", text, flags=re.DOTALL)
+    text = re.sub(r"\\\(.*?\\\)", " ", text, flags=re.DOTALL)
+    text = re.sub(r"\$\$.*?\$\$", " ", text, flags=re.DOTALL)
+    # Inline math: greedy single-$ would eat too much; bounded by next single-$.
+    text = re.sub(r"(?<!\\)\$[^$\n]{0,200}?(?<!\\)\$", " ", text)
+
+    # Citations → markers.
+    cite_pat = (
+        r"\\(?:" + "|".join(_CITE_CMDS) + r")\*?"
+        r"(?:\[[^\]]*\])?(?:\[[^\]]*\])?"
+        r"\{([^{}]*)\}"
+    )
+
+    def _cite_repl(m: re.Match) -> str:
+        keys = re.sub(r"\s+", "", m.group(1))
+        return f"[CITE:{keys}]"
+
+    text = re.sub(cite_pat, _cite_repl, text)
+
+    # \label, \ref, \eqref, \cref, \pageref, \autoref → drop.
+    text = re.sub(
+        r"\\(?:label|ref|eqref|cref|Cref|pageref|autoref|nameref)\s*\{[^{}]*\}",
+        "",
+        text,
+    )
+    # \input, \include, \includegraphics, \usepackage → drop.
+    text = re.sub(
+        r"\\(?:input|include|includegraphics|usepackage|bibliography|bibliographystyle|addbibresource)"
+        r"\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}",
+        "",
+        text,
+    )
+
+    # Section headings: keep the text content as a line break + the heading text.
+    text = re.sub(
+        r"\\(?:section|subsection|subsubsection|paragraph|subparagraph|chapter)\*?\s*\{([^{}]*)\}",
+        r"\n\n\1\n",
+        text,
+    )
+
+    # Strip text-formatting wrappers (preserve content). Iterate to handle nesting.
+    formatters = (
+        "textbf",
+        "textit",
+        "emph",
+        "texttt",
+        "textsc",
+        "textrm",
+        "textsf",
+        "textnormal",
+        "underline",
+        "mathbf",
+        "mathit",
+        "mathrm",
+        "mathsf",
+    )
+    fmt_pat = r"\\(?:" + "|".join(formatters) + r")\s*\{([^{}]*)\}"
+    for _ in range(4):
+        text = re.sub(fmt_pat, r"\1", text)
+
+    # Strip generic one-arg commands: \cmd{X} → X. Iterate for nesting.
+    for _ in range(4):
+        text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}", r"\1", text)
+
+    # Strip remaining no-arg commands.
+    text = re.sub(r"\\[a-zA-Z]+\*?", " ", text)
+
+    # LaTeX non-breaking spaces and stray braces.
+    text = text.replace("~", " ")
+    text = re.sub(r"[{}]", "", text)
+    # Collapse whitespace runs but keep paragraph breaks.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# title / abstract
+
+
+def extract_title(text: str) -> Optional[str]:
+    m = re.search(r"\\title\s*\{((?:[^{}]|\{[^{}]*\})*)\}", text, re.DOTALL)
+    if not m:
+        return None
+    raw = m.group(1)
+    # Recursively strip braces and a few common commands.
+    for _ in range(4):
+        raw = re.sub(r"\\(?:textbf|textit|emph|texttt|textsc|textrm|textsf)\{([^{}]*)\}", r"\1", raw)
+    raw = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\{([^{}]*)\}", r"\1", raw)
+    raw = re.sub(r"\\[a-zA-Z]+\*?", " ", raw)
+    raw = raw.replace("{", "").replace("}", "")
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw or None
+
+
+def extract_abstract(text: str) -> Optional[str]:
+    m = re.search(r"\\begin\s*\{abstract\}(.*?)\\end\s*\{abstract\}", text, re.DOTALL)
+    if not m:
+        return None
+    body = m.group(1)
+    body = strip_tex_to_text(r"\begin{document}" + body + r"\end{document}")
+    body = re.sub(r"\[CITE:[^\]]*\]", "", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    return body or None
+
+
+# ---------------------------------------------------------------------------
+# bib file discovery
+
+
+def find_bib_file(tex_path: Path, tex_text: str) -> Optional[Path]:
+    """Try, in order: ``\\bibliography{name}``, ``\\addbibresource{name.bib}``,
+    sibling ``references.bib`` / ``main.bib`` / ``bibliography.bib``."""
+    base = tex_path.parent
+
+    for cmd in ("addbibresource", "bibliography"):
+        for m in re.finditer(rf"\\{cmd}\s*\{{([^{{}}]+)\}}", tex_text):
+            for chunk in m.group(1).split(","):
+                name = chunk.strip()
+                if not name:
+                    continue
+                cand = base / name
+                if cand.suffix.lower() != ".bib":
+                    cand = cand.with_suffix(".bib")
+                if cand.exists():
+                    return cand
+    for default in ("references.bib", "main.bib", "bibliography.bib", "refs.bib"):
+        cand = base / default
+        if cand.exists():
+            return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
+# citations
+
+
+_CITE_MARKER = re.compile(r"\[CITE:([^\]]+)\]")
+
+
+def find_citations_tex(
+    stripped_text: str,
+    references: dict[str, Reference],
+) -> tuple[list[Citation], dict[str, Reference]]:
+    """Find ``[CITE:...]`` markers and link to references.
+
+    Returns (citations, augmented_references). Citation keys that have no
+    bib entry are surfaced as synthetic Reference records with raw_text set
+    to a clear "(citation key not present in bibliography)" so resolution
+    will (correctly) fail and the synthesizer flags them as ghost references.
+
+    The ``[CITE:...]`` markers are stripped from the displayed surrounding
+    sentence — readers should see prose, not internal markers.
+    """
+    citations: list[Citation] = []
+    refs = dict(references)
+    for m in _CITE_MARKER.finditer(stripped_text):
+        raw_sentence = _surrounding_sentence(stripped_text, m.span())
+        # Drop *all* CITE markers from the displayed sentence and tidy whitespace
+        # and orphan commas/semicolons that may be left behind.
+        clean = _CITE_MARKER.sub("", raw_sentence)
+        clean = re.sub(r"\s*[;,]\s*(?=[;,)]|$)", "", clean)
+        clean = re.sub(r"\(\s*\)", "", clean)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        for key in (k.strip() for k in m.group(1).split(",")):
+            if not key:
+                continue
+            if key not in refs:
+                refs[key] = Reference(
+                    ref_id=key,
+                    raw_text=f"(citation key `{key}` not present in bibliography)",
+                    authors=[],
+                    title=None,
+                )
+            citations.append(Citation(ref_id=key, sentence=clean))
+    return citations, refs
+
+
+# ---------------------------------------------------------------------------
+# entry point
+
+
+async def ingest_tex(
+    tex_path: Path,
+    *,
+    model: str,
+    verbose: bool = False,
+    bib_path: Optional[Path] = None,
+) -> IngestedPaper:
+    """Ingest a .tex file (and its sibling .bib) into an :class:`IngestedPaper`.
+
+    The ``model`` argument is accepted for signature symmetry with
+    :func:`prereview.ingest.ingest_pdf`; this path does not call the LLM
+    because the source is structured.
+    """
+    tex_text = tex_path.read_text(encoding="utf-8", errors="replace")
+    title = extract_title(tex_text)
+    abstract = extract_abstract(tex_text)
+
+    if bib_path is None:
+        bib_path = find_bib_file(tex_path, tex_text)
+    if bib_path is None:
+        _log(verbose, f"no .bib file found alongside {tex_path}; bibliography will be empty")
+        references: dict[str, Reference] = {}
+    else:
+        _log(verbose, f"reading bibliography from {bib_path}")
+        bib_text = bib_path.read_text(encoding="utf-8", errors="replace")
+        bib_entries = parse_bib(bib_text)
+        references = {k: bib_to_reference(k, v) for k, v in bib_entries.items()}
+        _log(verbose, f"parsed {len(references)} bibliography entries")
+
+    body = strip_tex_to_text(tex_text)
+    citations, references_with_ghosts = find_citations_tex(body, references)
+    _log(
+        verbose,
+        f"found {len(citations)} in-text citations across "
+        f"{len({c.ref_id for c in citations})} unique keys",
+    )
+    return IngestedPaper(
+        title=title,
+        abstract=abstract,
+        sections=[("body", body)],
+        references=references_with_ghosts,
+        citations=citations,
+    )

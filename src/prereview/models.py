@@ -1,0 +1,84 @@
+"""Shared data models for the prereview pipeline."""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class Verdict(str, Enum):
+    SUPPORTS = "supports"
+    PARTIALLY_SUPPORTS = "partially_supports"
+    DOES_NOT_SUPPORT = "does_not_support"
+    ABSTRACT_TOO_THIN = "abstract_too_thin"
+    TARGET_UNAVAILABLE = "target_unavailable"
+    METADATA_MISMATCH = "metadata_mismatch"
+
+
+class Reference(BaseModel):
+    """A bibliography entry as parsed from the draft paper."""
+
+    ref_id: str  # Stable identifier within the paper, e.g. "ref-12" or "Smith2023"
+    raw_text: str
+    authors: list[str] = Field(default_factory=list)
+    title: Optional[str] = None
+    year: Optional[int] = None
+    venue: Optional[str] = None
+    doi: Optional[str] = None
+    arxiv_id: Optional[str] = None
+    url: Optional[str] = None
+
+
+class CanonicalRecord(BaseModel):
+    """A reference resolved against an external scholarly API."""
+
+    source: str  # "crossref" | "semanticscholar" | "arxiv" | "openalex"
+    title: str
+    authors: list[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    venue: Optional[str] = None
+    doi: Optional[str] = None
+    url: Optional[str] = None
+    abstract: Optional[str] = None
+    open_access_pdf_url: Optional[str] = None
+    is_retracted: bool = False
+
+
+class Citation(BaseModel):
+    """An in-text citation: a sentence (or two) plus the reference it points to."""
+
+    ref_id: str
+    sentence: str
+    section: Optional[str] = None  # e.g. "Introduction", "Methods"
+
+
+class IngestedPaper(BaseModel):
+    title: Optional[str] = None
+    abstract: Optional[str] = None
+    sections: list[tuple[str, str]] = Field(default_factory=list)  # (heading, body)
+    references: dict[str, Reference] = Field(default_factory=dict)
+    citations: list[Citation] = Field(default_factory=list)
+
+
+class VerificationResult(BaseModel):
+    ref_id: str
+    citation: Citation
+    reference: Reference
+    canonical: Optional[CanonicalRecord] = None
+    verdict: Verdict
+    rationale: str
+    abstract_only: bool = False  # True if the verdict was based on abstract alone
+
+
+class ReviewBundle(BaseModel):
+    """Everything stage 4 (synthesize) needs to write the review."""
+
+    paper: IngestedPaper
+    verifications: list[VerificationResult]
+    model: str
+    synthesis_model: str
+    fetched_full_text_count: int = 0
+    abstract_only_count: int = 0
+    unresolved_count: int = 0

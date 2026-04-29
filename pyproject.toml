@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prereview"
+version = "0.1.0"
+description = "AI-assisted pre-submission review of academic preprints, with verification of every cited reference."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Evan Charris" }]
+dependencies = [
+    "paper-qa>=5.0.0",
+    "httpx>=0.27",
+    "litellm>=1.50",
+    "pydantic>=2.7",
+    "pypdf>=4.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+
+[project.scripts]
+prereview = "prereview.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prereview"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

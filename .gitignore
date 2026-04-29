@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+dist/
+build/
+.coverage
+.mypy_cache/
+.ruff_cache/
+*.review.md.bak.*
+.env
+
+# local fixture PDFs the user may stage but not commit
+tests/fixtures/local/
