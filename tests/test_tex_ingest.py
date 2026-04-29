@@ -15,7 +15,9 @@ from prereview.tex_ingest import (
     extract_abstract,
     extract_title,
     find_bib_file,
+    find_broken_refs,
     find_citations_tex,
+    find_unused_bibkeys,
     ingest_tex,
     parse_bib,
     parse_bib_authors,
@@ -242,3 +244,84 @@ Equation: $a + b = c$.
     body = paper.sections[0][1]
     assert "a + b" not in body
     assert "fig" not in body
+
+
+# ---------------------------------------------------------------------------
+# hygiene checks
+
+
+def test_find_broken_refs_flags_undefined_targets():
+    tex = r"""
+\section{Intro}\label{sec:intro}
+See Section~\ref{sec:intro} and Appendix~\ref{app:missing}.
+Equation~\eqref{eq:nope} is great. Also \cref{tab:nope}.
+"""
+    out = find_broken_refs(tex)
+    targets = {(b.command, b.target) for b in out}
+    assert ("ref", "app:missing") in targets
+    assert ("eqref", "eq:nope") in targets
+    assert ("cref", "tab:nope") in targets
+    # Defined target should not appear.
+    assert ("ref", "sec:intro") not in targets
+
+
+def test_find_broken_refs_ignores_commented_out_refs():
+    tex = r"""
+\section{Intro}\label{sec:x}
+Real ref: \ref{sec:x}.
+% \ref{will:not:exist}  -- commented out, should be ignored.
+"""
+    out = find_broken_refs(tex)
+    assert out == []
+
+
+def test_find_broken_refs_dedupes_repeated_targets():
+    """A broken \\ref reused at three sites should produce one entry, not three."""
+    tex = r"""
+First mention: \ref{missing}. Second: \ref{missing}. Third: \ref{missing}.
+"""
+    out = find_broken_refs(tex)
+    assert len(out) == 1
+    assert out[0].target == "missing"
+
+
+def test_find_unused_bibkeys_lists_uncited_entries():
+    bib_text = """
+    @article{used, author={A}, title={t}, year={2023}}
+    @article{also_used, author={B}, title={t}, year={2023}}
+    @article{unused1, author={C}, title={t}, year={2023}}
+    @article{unused2, author={D}, title={t}, year={2023}}
+    """
+    refs = {k: bib_to_reference(k, v) for k, v in parse_bib(bib_text).items()}
+    body = "Cite [CITE:used] and [CITE:also_used]."
+    citations, refs_with_ghosts = find_citations_tex(body, refs)
+
+    out = find_unused_bibkeys(refs_with_ghosts, citations)
+    assert out == ["unused1", "unused2"]
+
+
+def test_ingest_tex_populates_hygiene_fields(tmp_path: Path):
+    """End-to-end: hygiene fields should land on IngestedPaper."""
+    import asyncio
+
+    bib = tmp_path / "references.bib"
+    bib.write_text(
+        "@article{cited, author={A}, title={A}, year={2023}}\n"
+        "@article{never_cited, author={B}, title={B}, year={2023}}\n"
+    )
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\title{Hygiene Toy}
+\begin{document}
+\section{Intro}\label{sec:intro}
+See \ref{sec:intro} (good). Also \ref{nope:gone} (broken).
+We cite \citep{cited}.
+\end{document}
+"""
+    )
+    paper = asyncio.run(ingest_tex(tex, model="ignored", verbose=False))
+    assert paper.unused_bibkeys == ["never_cited"]
+    targets = {(b.command, b.target) for b in paper.broken_refs}
+    assert ("ref", "nope:gone") in targets
+    assert ("ref", "sec:intro") not in targets

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .llm import acompletion_json
 from .models import CitationRole, ReviewBundle, VerificationResult, Verdict
@@ -249,9 +249,70 @@ def _quote(s: str) -> str:
     return f"> {s}"
 
 
+def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Hygiene checks section, or None if there's nothing
+    to surface.
+
+    Reports two classes of source-level issue that the rest of the pipeline
+    can't see (since they're about .tex structure rather than citation
+    semantics): broken cross-references (\\ref to a non-existent \\label) and
+    unused bibliography entries (in the .bib but never \\cite-d).
+    """
+    paper = bundle.paper
+    broken = paper.broken_refs
+    unused = paper.unused_bibkeys
+    if not broken and not unused:
+        return None
+
+    out: list[str] = ["## Hygiene checks", ""]
+    out.append(
+        "Source-level issues detected by parsing the .tex and .bib directly. "
+        "These are mechanical findings — the kind a copyeditor or pre-submission "
+        "checklist would catch."
+    )
+    out.append("")
+
+    if broken:
+        out.append(f"### Broken cross-references ({len(broken)})")
+        out.append("")
+        out.append(
+            "Each entry is a `\\ref`/`\\cref`/etc. whose target has no matching "
+            "`\\label` anywhere in the source. These render as empty placeholders "
+            "or `??` in the compiled PDF."
+        )
+        out.append("")
+        for br in broken:
+            out.append(f"- `\\{br.command}{{{br.target}}}` — context: > {br.surrounding}")
+        out.append("")
+
+    if unused:
+        out.append(f"### Unused bibliography entries ({len(unused)})")
+        out.append("")
+        out.append(
+            "These bibkeys are in the .bib but appear in no `\\cite{...}` in the body. "
+            "They are dead weight in the bibliography — either remove them, or cite "
+            "them where intended."
+        )
+        out.append("")
+        for key in unused:
+            out.append(f"- `{key}`")
+        out.append("")
+
+    return "\n".join(out)
+
+
 def render_methodology(bundle: ReviewBundle) -> str:
     total = len(bundle.verifications)
     flagged = sum(1 for v in bundle.verifications if _is_problematic(v))
+    n_broken = len(bundle.paper.broken_refs)
+    n_unused = len(bundle.paper.unused_bibkeys)
+    hygiene_line = (
+        f"Source-level hygiene checks ran on the .tex source: "
+        f"{n_broken} broken cross-reference{'' if n_broken == 1 else 's'} "
+        f"(\\ref/\\cref to a non-existent \\label), "
+        f"{n_unused} unused bibliography entr{'y' if n_unused == 1 else 'ies'} "
+        f"(in the .bib but never \\cite-d)."
+    )
     return textwrap.dedent(f"""
     ## Methodology and limits of this review
 
@@ -263,6 +324,8 @@ def render_methodology(bundle: ReviewBundle) -> str:
     that did resolve, {bundle.fetched_full_text_count} were verified against the cited paper's full text and
     {bundle.abstract_only_count} were verified against the abstract only. {flagged} citation{"" if flagged == 1 else "s"} {"was" if flagged == 1 else "were"} flagged
     in the section above.
+
+    {hygiene_line}
 
     What this tool does **not** check:
 
@@ -422,16 +485,21 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
 
     head = f"# Pre-submission review\n\n**Paper:** {paper.title or '(title not extracted)'}\n"
 
-    return "\n\n".join(
+    sections = [
+        head,
+        "## Summary",
+        summary,
+        "## Strengths",
+        strengths,
+        "## Weaknesses",
+        weaknesses,
+        render_citation_issues(bundle).strip(),
+    ]
+    hygiene = render_hygiene_section(bundle)
+    if hygiene is not None:
+        sections.append(hygiene.strip())
+    sections.extend(
         [
-            head,
-            "## Summary",
-            summary,
-            "## Strengths",
-            strengths,
-            "## Weaknesses",
-            weaknesses,
-            render_citation_issues(bundle).strip(),
             "## Questions for the author",
             questions,
             "## Suggested rating",
@@ -440,6 +508,7 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
             "",
         ]
     )
+    return "\n\n".join(sections)
 
 
 # ---------------------------------------------------------------------------

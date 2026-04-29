@@ -70,12 +70,27 @@ class Citation(BaseModel):
     section: Optional[str] = None  # e.g. "Introduction", "Methods"
 
 
+class BrokenRef(BaseModel):
+    """A ``\\ref``-family command whose target has no matching ``\\label``.
+
+    These are detected directly from the .tex source (PDF ingest cannot see
+    them, since by the time the PDF is built the broken refs render as
+    ``??`` or as silent placeholders).
+    """
+
+    command: str  # e.g. "ref", "eqref", "cref", "Cref", "autoref", "pageref", "nameref"
+    target: str  # the label name the command is pointing at
+    surrounding: str  # short context around the broken ref so the user can locate it
+
+
 class IngestedPaper(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
     sections: list[tuple[str, str]] = Field(default_factory=list)  # (heading, body)
     references: dict[str, Reference] = Field(default_factory=dict)
     citations: list[Citation] = Field(default_factory=list)
+    unused_bibkeys: list[str] = Field(default_factory=list)
+    broken_refs: list[BrokenRef] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):

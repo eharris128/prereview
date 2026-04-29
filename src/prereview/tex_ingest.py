@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .ingest import _surrounding_sentence
-from .models import Citation, IngestedPaper, Reference
+from .models import BrokenRef, Citation, IngestedPaper, Reference
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -463,6 +463,61 @@ def find_citations_tex(
 
 
 # ---------------------------------------------------------------------------
+# hygiene checks
+
+
+_LABEL_RE = re.compile(r"\\label\s*\{([^{}]+)\}")
+_REF_CMDS = ("ref", "eqref", "cref", "Cref", "pageref", "autoref", "nameref")
+_REF_RE = re.compile(r"\\(" + "|".join(_REF_CMDS) + r")\s*\{([^{}]+)\}")
+
+
+def find_broken_refs(tex_text: str) -> list[BrokenRef]:
+    """Return ``\\ref``-family commands whose target has no matching ``\\label``.
+
+    Comments are stripped first so commented-out code doesn't false-positive.
+    Surrounding context (~120 chars) is captured so the user can locate the
+    issue in the source.
+    """
+    text = re.sub(r"(?<!\\)%[^\n]*", "", tex_text)
+    labels = {m.group(1).strip() for m in _LABEL_RE.finditer(text)}
+
+    out: list[BrokenRef] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _REF_RE.finditer(text):
+        cmd = m.group(1)
+        target = m.group(2).strip()
+        if not target or target in labels:
+            continue
+        # De-duplicate (cmd, target) pairs — the first occurrence carries
+        # the most useful context, and a broken ref usually appears once
+        # per logical site even if cited many places.
+        sig = (cmd, target)
+        if sig in seen:
+            continue
+        seen.add(sig)
+
+        start = max(0, m.start() - 60)
+        end = min(len(text), m.end() + 60)
+        snippet = re.sub(r"\s+", " ", text[start:end]).strip()
+        out.append(BrokenRef(command=cmd, target=target, surrounding=snippet))
+    return out
+
+
+def find_unused_bibkeys(
+    references: dict[str, Reference],
+    citations: list[Citation],
+) -> list[str]:
+    """Return bibkeys present in the bibliography but never cited in the body.
+
+    Synthetic ghost-reference entries (created by find_citations_tex when a
+    ``\\cite{key}`` has no matching .bib entry) are excluded — they are by
+    construction cited at least once.
+    """
+    cited = {c.ref_id for c in citations}
+    return sorted(k for k in references if k not in cited)
+
+
+# ---------------------------------------------------------------------------
 # entry point
 
 
@@ -502,10 +557,21 @@ async def ingest_tex(
         f"found {len(citations)} in-text citations across "
         f"{len({c.ref_id for c in citations})} unique keys",
     )
+
+    broken_refs = find_broken_refs(tex_text)
+    unused_bibkeys = find_unused_bibkeys(references, citations)
+    if verbose:
+        if broken_refs:
+            _log(verbose, f"found {len(broken_refs)} broken \\ref/\\cref targets")
+        if unused_bibkeys:
+            _log(verbose, f"found {len(unused_bibkeys)} bib entries that are never cited")
+
     return IngestedPaper(
         title=title,
         abstract=abstract,
         sections=[("body", body)],
         references=references_with_ghosts,
         citations=citations,
+        unused_bibkeys=unused_bibkeys,
+        broken_refs=broken_refs,
     )

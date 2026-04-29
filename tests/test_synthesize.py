@@ -10,6 +10,7 @@ import pytest
 
 from prereview import synthesize as syn
 from prereview.models import (
+    BrokenRef,
     CanonicalRecord,
     Citation,
     CitationRole,
@@ -238,6 +239,42 @@ def test_does_not_support_flagged_regardless_of_role():
     md = syn.render_citation_issues(bundle)
     assert "bad_method" in md
     assert "Does not support" in md
+
+
+def test_render_hygiene_section_shows_broken_refs_and_unused_bibkeys():
+    refs = [_v(Verdict.SUPPORTS, ref_id="1", abstract_only=False)]
+    paper = IngestedPaper(
+        title="A Toy Paper",
+        abstract="x",
+        sections=[("body", "x")],
+        references={v.reference.ref_id: v.reference for v in refs},
+        citations=[v.citation for v in refs],
+        unused_bibkeys=["dead1", "dead2"],
+        broken_refs=[
+            BrokenRef(command="ref", target="app:missing", surrounding="See App.~\\ref{app:missing}."),
+            BrokenRef(command="cref", target="tab:nope", surrounding="\\cref{tab:nope} shows nothing."),
+        ],
+    )
+    bundle = ReviewBundle(
+        paper=paper,
+        verifications=refs,
+        model="m",
+        synthesis_model="s",
+    )
+    md = syn.render_hygiene_section(bundle)
+    assert md is not None
+    assert "Broken cross-references (2)" in md
+    assert "app:missing" in md
+    assert "tab:nope" in md
+    assert "Unused bibliography entries (2)" in md
+    assert "dead1" in md
+    assert "dead2" in md
+
+
+def test_render_hygiene_section_returns_none_when_clean():
+    paper = IngestedPaper(title="t", references={}, citations=[])
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    assert syn.render_hygiene_section(bundle) is None
 
 
 def test_render_methodology_mentions_models_and_counts():
