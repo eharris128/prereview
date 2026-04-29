@@ -40,7 +40,19 @@ def _looks_like_oa_host(url: str) -> bool:
 from . import __version__
 from .cache import Cache, cache_key, verification_key
 from .llm import acompletion_json
-from .models import CanonicalRecord, Citation, Reference, VerificationResult, Verdict
+from .models import (
+    CanonicalRecord,
+    Citation,
+    CitationRole,
+    Reference,
+    VerificationResult,
+    Verdict,
+)
+
+
+# Bump when the verification prompt changes meaningfully — included in the
+# cache key so that cached verdicts from older prompts don't shadow new ones.
+_PROMPT_VERSION = "v2-roles"
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -65,6 +77,12 @@ _VALID_VERDICTS = {
     "partially_supports": Verdict.PARTIALLY_SUPPORTS,
     "does_not_support": Verdict.DOES_NOT_SUPPORT,
     "abstract_too_thin": Verdict.ABSTRACT_TOO_THIN,
+}
+
+_VALID_ROLES = {
+    "method_attribution": CitationRole.METHOD_ATTRIBUTION,
+    "claim_support": CitationRole.CLAIM_SUPPORT,
+    "background": CitationRole.BACKGROUND,
 }
 
 
@@ -136,9 +154,9 @@ def _verify_prompt(
     cited_authors = ", ".join(canonical.authors[:5]) or "(unknown)"
     raw = reference.raw_text or "(not extracted)"
     evidence_label = "abstract" if abstract_only else "excerpt(s) from full text"
-    return f"""Decide whether the cited reference actually supports the claim made in the citing paper.
+    return f"""Verify a citation in a paper. First classify the citation's role in its sentence, then judge it by the criteria appropriate to that role.
 
-CLAIM (the sentence in the citing paper where the citation appears):
+CITING SENTENCE (where the citation appears in the paper under review):
 \"\"\"{citation.sentence}\"\"\"
 
 BIBLIOGRAPHY ENTRY (as the author wrote it):
@@ -150,18 +168,45 @@ CITED PAPER (resolved canonically against {canonical.source}):
 - Year: {canonical.year}
 - Venue: {canonical.venue or "(unknown)"}
 
-EVIDENCE ({evidence_label}):
+EVIDENCE ({evidence_label}, from the cited paper):
 \"\"\"{evidence}\"\"\"
 
-Choose exactly one verdict:
-- "supports" — the cited evidence directly substantiates the claim.
-- "partially_supports" — the cited evidence backs a related, narrower, or qualified version of the claim, but not the claim as written.
-- "does_not_support" — the cited evidence does not substantiate the claim, or contradicts it.
-- "abstract_too_thin" — the evidence shown is too thin to decide. Use this when the claim is specific (a number, a comparison, a method detail) but only an abstract is available.
+STEP 1 — Classify the citation's ROLE:
 
-Return JSON of the form: {{"verdict": "...", "rationale": "one sentence grounded in the cited evidence"}}.
-- The rationale must paraphrase or quote concrete content from the evidence above. Do not speculate beyond it.
-- If the evidence is the abstract only and the claim depends on details normally found in the body, prefer "abstract_too_thin" over guessing.
+- "method_attribution" — the citation attributes a named method, tool, library, dataset, format, framework, or algorithm that the citing sentence uses or references by name (e.g., "we use HST [cite]", "tuned with Optuna [cite]", "Croissant metadata [cite]", "our reimplementation of Anomalicious [cite]"). The relevant question is: is the cited paper the canonical/defining paper for the named thing?
+- "claim_support" — the citing sentence makes a specific factual or quantitative claim (a number, a comparison, a mechanism, a finding) and the citation is offered as evidence for it (e.g., "X has been shown to occur in Y% of cases [cite]", "payloads use RFC 2606 hosts [cite]"). The relevant question is: does the cited paper actually back that specific claim?
+- "background" — the citation gestures at related work, an example, an incident, or a body of prior literature that the citing sentence summarizes or alludes to (e.g., "incidents like SolarWinds [cite]", "prior surveys of supply-chain attacks [cite]", "recent in-depth case studies [cite]"). The relevant question is: is the cited paper on-topic for the background or example being invoked?
+
+When the citation could plausibly fit two roles, prefer the more specific one: method_attribution > claim_support > background.
+
+STEP 2 — Apply role-appropriate criteria and choose ONE verdict.
+
+For "method_attribution":
+- "supports" — the cited paper is the canonical/original paper for the named method/tool/concept (judge by title, authors, abstract). A method paper from year N CANNOT be expected to contain results from a citing paper written in year N+M; absence of the citing paper's own numbers is NOT a reason to downgrade.
+- "partially_supports" — the cited paper is a follow-up, variant, or survey covering the named thing rather than the canonical defining paper.
+- "does_not_support" — the cited paper is clearly the wrong paper for the attribution (e.g., wrong topic entirely).
+- "abstract_too_thin" — only when title, authors, and abstract together are insufficient to decide. This should be rare for method attributions.
+
+For "claim_support":
+- "supports" — the cited evidence directly substantiates the specific claim in the citing sentence.
+- "partially_supports" — the cited evidence backs a related, narrower, or qualified version of the claim, but not the claim as written.
+- "does_not_support" — the cited evidence does not substantiate the specific claim, or contradicts it.
+- "abstract_too_thin" — the claim is specific (a number, a comparison, a precise mechanism) and only an abstract is available, so the body would be needed to decide.
+
+For "background":
+- "supports" — the cited paper is on-topic for the background, example, or body of work the citing sentence is gesturing at.
+- "partially_supports" — the cited paper is tangentially relevant (related field, but not really about the example invoked).
+- "does_not_support" — the cited paper is off-topic for the background being invoked.
+- "abstract_too_thin" — only when even the title is too vague to judge on-topic-ness.
+
+Return JSON of the form:
+{{"role": "method_attribution|claim_support|background", "verdict": "supports|partially_supports|does_not_support|abstract_too_thin", "rationale": "one sentence grounded in the cited evidence"}}
+
+Hard rules:
+- The rationale must paraphrase or quote concrete content from the EVIDENCE above. Do not speculate beyond it.
+- Do NOT downgrade a method_attribution to "partially_supports" merely because the cited paper does not contain numbers or results from the citing paper. That is structural and expected.
+- Do NOT downgrade a background to "partially_supports" merely because the citing sentence's wording does not appear verbatim in the cited paper.
+- Reserve "does_not_support" for cases where the cited paper is genuinely the wrong paper for the citation's role — wrong method, contradicted claim, off-topic background.
 """
 
 
@@ -256,8 +301,11 @@ class Verifier:
 
         # Cache lookup. Key includes the evidence marker so that re-running
         # with full-text fetched (or with --no-fetch-cited) doesn't reuse the
-        # other mode's verdict.
-        evidence_marker = f"abstract_only={int(abstract_only)}|evlen={len(evidence)}"
+        # other mode's verdict. The prompt version invalidates cached verdicts
+        # whenever the verification prompt's semantics change.
+        evidence_marker = (
+            f"prompt={_PROMPT_VERSION}|abstract_only={int(abstract_only)}|evlen={len(evidence)}"
+        )
         vkey = verification_key(
             model=model,
             ref_id=reference.ref_id,
@@ -294,6 +342,8 @@ class Verifier:
 
         verdict_key = (data.get("verdict") or "").strip().lower()
         verdict = _VALID_VERDICTS.get(verdict_key, Verdict.ABSTRACT_TOO_THIN)
+        role_key = (data.get("role") or "").strip().lower()
+        role = _VALID_ROLES.get(role_key)
         rationale = (data.get("rationale") or "").strip() or "(no rationale returned)"
         result = VerificationResult(
             ref_id=reference.ref_id,
@@ -303,6 +353,7 @@ class Verifier:
             verdict=verdict,
             rationale=rationale,
             abstract_only=abstract_only,
+            role=role,
         )
         try:
             self.cache.put_verification_json(vkey, result.model_dump_json())

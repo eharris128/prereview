@@ -17,6 +17,22 @@ class Verdict(str, Enum):
     METADATA_MISMATCH = "metadata_mismatch"
 
 
+class CitationRole(str, Enum):
+    """How a citation functions in its surrounding sentence.
+
+    The verifier asks a different question for each role: a method-attribution
+    cite is judged on whether the cited paper is the canonical paper for the
+    named method/tool/concept; a claim-support cite is judged on whether the
+    cited evidence backs the specific claim; a background cite is judged on
+    whether the cited paper is on-topic for the example or context being
+    summarized.
+    """
+
+    METHOD_ATTRIBUTION = "method_attribution"
+    CLAIM_SUPPORT = "claim_support"
+    BACKGROUND = "background"
+
+
 class Reference(BaseModel):
     """A bibliography entry as parsed from the draft paper."""
 
@@ -70,6 +86,7 @@ class VerificationResult(BaseModel):
     verdict: Verdict
     rationale: str
     abstract_only: bool = False  # True if the verdict was based on abstract alone
+    role: Optional[CitationRole] = None  # None for non-LLM verdicts (ghost, mismatch).
 
 
 class ReviewBundle(BaseModel):

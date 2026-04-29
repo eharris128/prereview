@@ -12,6 +12,7 @@ from prereview import synthesize as syn
 from prereview.models import (
     CanonicalRecord,
     Citation,
+    CitationRole,
     IngestedPaper,
     Reference,
     ReviewBundle,
@@ -39,7 +40,7 @@ def _make_bundle(verifications: list[VerificationResult]) -> ReviewBundle:
     )
 
 
-def _v(verdict: Verdict, *, ref_id="1", canonical=True, abstract_only=False, rationale="rationale.", sentence="We claim X [1].") -> VerificationResult:
+def _v(verdict: Verdict, *, ref_id="1", canonical=True, abstract_only=False, rationale="rationale.", sentence="We claim X [1].", role=None) -> VerificationResult:
     ref = Reference(
         ref_id=ref_id,
         raw_text=f"[{ref_id}] Smith. A Toy Paper. 2023.",
@@ -69,6 +70,7 @@ def _v(verdict: Verdict, *, ref_id="1", canonical=True, abstract_only=False, rat
         verdict=verdict,
         rationale=rationale,
         abstract_only=abstract_only,
+        role=role,
     )
 
 
@@ -167,6 +169,75 @@ def test_render_citation_issues_site_level_multi_site():
     assert "Strong unrelated claim about Y" in md
     # Most-severe site listed first (does_not_support before partially_supports).
     assert md.index("Strong unrelated claim about Y") < md.index("Mild claim about X")
+
+
+def test_method_attribution_abstract_only_supports_not_flagged():
+    """A method/tool attribution cite is structurally fine when title+authors
+    match — abstract-only `supports` should not be surfaced as 'verify'."""
+    bundle = _make_bundle([
+        _v(
+            Verdict.SUPPORTS,
+            ref_id="hst",
+            abstract_only=True,
+            role=CitationRole.METHOD_ATTRIBUTION,
+            sentence="We use HST [hst].",
+            rationale="The cited paper introduces the HST anomaly detector.",
+        ),
+    ])
+    md = syn.render_citation_issues(bundle)
+    assert "No citation issues detected" in md
+
+
+def test_claim_support_abstract_only_supports_still_flagged():
+    """A claim-support cite that only resolves at the abstract still gets
+    flagged for verification — the body might tell a different story."""
+    bundle = _make_bundle([
+        _v(
+            Verdict.SUPPORTS,
+            ref_id="claim",
+            abstract_only=True,
+            role=CitationRole.CLAIM_SUPPORT,
+            sentence="X occurs in 30% of cases [claim].",
+            rationale="Abstract reports the 30% figure.",
+        ),
+    ])
+    md = syn.render_citation_issues(bundle)
+    assert "claim" in md
+    assert "abstract-only" in md.lower()
+
+
+def test_method_attribution_abstract_too_thin_not_flagged():
+    """If the model returns abstract_too_thin on a method attribution, that
+    means it couldn't tell from abstract+title alone. We treat that as not
+    actionable: pushing the user to fetch full text won't change the verdict
+    on whether this is the right method's paper."""
+    bundle = _make_bundle([
+        _v(
+            Verdict.ABSTRACT_TOO_THIN,
+            ref_id="lof",
+            abstract_only=True,
+            role=CitationRole.METHOD_ATTRIBUTION,
+            sentence="LOF [lof] is one of the baselines.",
+            rationale="Abstract describes LOF without naming the citing paper's claim.",
+        ),
+    ])
+    md = syn.render_citation_issues(bundle)
+    assert "No citation issues detected" in md
+
+
+def test_does_not_support_flagged_regardless_of_role():
+    """does_not_support is always actionable — wrong cite is wrong cite."""
+    bundle = _make_bundle([
+        _v(
+            Verdict.DOES_NOT_SUPPORT,
+            ref_id="bad_method",
+            role=CitationRole.METHOD_ATTRIBUTION,
+            rationale="Cited paper is about a different algorithm entirely.",
+        ),
+    ])
+    md = syn.render_citation_issues(bundle)
+    assert "bad_method" in md
+    assert "Does not support" in md
 
 
 def test_render_methodology_mentions_models_and_counts():

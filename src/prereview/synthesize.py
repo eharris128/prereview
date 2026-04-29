@@ -17,7 +17,7 @@ import textwrap
 from typing import Iterable
 
 from .llm import acompletion_json
-from .models import ReviewBundle, VerificationResult, Verdict
+from .models import CitationRole, ReviewBundle, VerificationResult, Verdict
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -39,14 +39,23 @@ _PROBLEM_VERDICTS = (
 
 def _is_problematic(v: VerificationResult, *, body_load_bearing: bool = True) -> bool:
     """A citation is problematic if it didn't resolve, didn't support, or only
-    abstract-supports a load-bearing claim."""
+    abstract-supports a load-bearing claim.
+
+    Method-attribution cites are judged more leniently: a method paper from
+    year N can't be expected to contain the citing paper's evaluation, so
+    abstract-only "supports" or "abstract too thin" outcomes there are not
+    flagged. The rationale is the same one we put in the verifier prompt —
+    these are structural noise, not real review issues.
+    """
     if v.verdict in _PROBLEM_VERDICTS:
         return True
+    is_method = v.role == CitationRole.METHOD_ATTRIBUTION
     if v.verdict == Verdict.ABSTRACT_TOO_THIN:
-        return True
+        return not is_method
     if body_load_bearing and v.abstract_only and v.verdict == Verdict.SUPPORTS:
-        # Abstract-only "supports" — flag it so the user can verify.
-        return True
+        # Abstract-only "supports" — flag for verification, except for method
+        # attributions where title+authors+abstract are sufficient by design.
+        return not is_method
     return False
 
 

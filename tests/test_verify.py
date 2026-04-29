@@ -19,6 +19,7 @@ from prereview.cache import Cache
 from prereview.models import (
     CanonicalRecord,
     Citation,
+    CitationRole,
     Reference,
     Verdict,
 )
@@ -260,3 +261,70 @@ async def test_unknown_verdict_falls_back_to_abstract_too_thin(cache, monkeypatc
     async with Verifier(cache=cache) as v:
         r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
     assert r.verdict == Verdict.ABSTRACT_TOO_THIN
+
+
+@pytest.mark.asyncio
+async def test_role_flows_through_from_llm_response(cache, monkeypatch):
+    can = _canonical(abstract="Introduces the HST anomaly detector for streaming data.")
+
+    async def fake_json(**_):
+        return {
+            "role": "method_attribution",
+            "verdict": "supports",
+            "rationale": "Title and abstract identify this as the canonical HST paper.",
+        }
+
+    monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
+    async with Verifier(cache=cache) as v:
+        r = await v.verify(
+            _cite(sentence="We use HST [tan2011hst]."),
+            _ref("tan2011hst"),
+            can,
+            model="x",
+            fetch_cited=False,
+        )
+    assert r.role == CitationRole.METHOD_ATTRIBUTION
+    assert r.verdict == Verdict.SUPPORTS
+
+
+@pytest.mark.asyncio
+async def test_unknown_role_parses_as_none(cache, monkeypatch):
+    """If the LLM omits or mangles the role field, role should be None,
+    not crash. The verdict still flows through."""
+    can = _canonical(abstract="Some content.")
+
+    async def fake_json(**_):
+        return {
+            "role": "definitely_not_a_role",
+            "verdict": "supports",
+            "rationale": "ok",
+        }
+
+    monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
+    async with Verifier(cache=cache) as v:
+        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+    assert r.role is None
+    assert r.verdict == Verdict.SUPPORTS
+
+
+@pytest.mark.asyncio
+async def test_prompt_includes_role_classification_step(cache, monkeypatch):
+    """The new prompt should be teaching the model to classify role first.
+    This test guards against accidentally reverting to the v1 prompt."""
+    can = _canonical(abstract="abstract")
+    captured = {}
+
+    async def fake_json(*, user, **_):
+        captured["user"] = user
+        return {"role": "claim_support", "verdict": "supports", "rationale": "ok"}
+
+    monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
+    async with Verifier(cache=cache) as v:
+        await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+
+    prompt = captured["user"]
+    assert "method_attribution" in prompt
+    assert "claim_support" in prompt
+    assert "background" in prompt
+    # The key methodological rule that we want preserved.
+    assert "method paper" in prompt.lower() or "method attribution" in prompt.lower()
