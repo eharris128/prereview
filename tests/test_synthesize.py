@@ -15,6 +15,7 @@ from prereview.models import (
     Citation,
     CitationRole,
     IngestedPaper,
+    LinkCheck,
     Reference,
     ReviewBundle,
     VerificationResult,
@@ -375,6 +376,74 @@ def test_render_resolved_record_marks_retraction_in_citation_issues():
     md = syn.render_citation_issues(bundle)
     assert "⚠ **RETRACTED**" in md
     assert "Does not support" in md
+
+
+def test_render_hygiene_section_lists_unreachable_urls():
+    """An unreachable URL surfaced from the .tex/.bib should land in Hygiene."""
+    paper = IngestedPaper(
+        title="A Paper",
+        link_checks=[
+            LinkCheck(url="https://ok.example.org/a", source="tex_url", status=200, ok=True),
+            LinkCheck(
+                url="https://gone.example.org/x",
+                source="bib_url",
+                bibkey="r1",
+                status=404,
+                ok=False,
+                error="HTTP 404",
+            ),
+            LinkCheck(
+                url="https://broken.example.org/z",
+                source="tex_href",
+                ok=False,
+                error="connection error: ...",
+            ),
+        ],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    md = syn.render_hygiene_section(bundle)
+    assert md is not None
+    assert "Unreachable URLs (2 of 3)" in md
+    # The healthy URL should NOT appear in the failures list.
+    assert "ok.example.org" not in md
+    # Both broken URLs surface, with their origin and reason.
+    assert "https://gone.example.org/x" in md
+    assert "404" in md
+    assert "r1" in md  # bibkey carried through
+    assert "https://broken.example.org/z" in md
+    assert "connection error" in md
+
+
+def test_render_hygiene_section_omits_link_block_when_all_pass():
+    paper = IngestedPaper(
+        title="t",
+        link_checks=[
+            LinkCheck(url="https://ok.example.org/a", source="tex_url", status=200, ok=True),
+        ],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    md = syn.render_hygiene_section(bundle)
+    assert md is None  # all healthy + no other hygiene issues -> no section
+
+
+def test_render_methodology_includes_link_check_summary():
+    paper = IngestedPaper(
+        title="t",
+        link_checks=[
+            LinkCheck(url="https://ok.example.org/a", source="tex_url", status=200, ok=True),
+            LinkCheck(url="https://gone.example.org/x", source="tex_url", status=404, ok=False, error="HTTP 404"),
+        ],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    md = syn.render_methodology(bundle)
+    assert "1 of 2 URLs unreachable" in md
+
+
+def test_render_methodology_omits_link_check_summary_when_no_urls():
+    paper = IngestedPaper(title="t")
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    md = syn.render_methodology(bundle)
+    assert "URL" not in md  # no URL clause when there's nothing to check
 
 
 def test_render_methodology_includes_retraction_count():

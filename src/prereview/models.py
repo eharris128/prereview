@@ -83,6 +83,23 @@ class BrokenRef(BaseModel):
     surrounding: str  # short context around the broken ref so the user can locate it
 
 
+class LinkCheck(BaseModel):
+    """Reachability check on a URL surfaced by the source paper.
+
+    URLs come from three places: ``\\url{...}`` in the .tex body, ``\\href{...}{...}``
+    in the .tex body, and ``url = {...}`` fields in the .bib. ``ok`` is True iff
+    the final response (after redirects) was a 2xx or 3xx; 4xx/5xx, timeouts,
+    and connection errors are all flagged.
+    """
+
+    url: str
+    source: str  # "tex_url" | "tex_href" | "bib_url"
+    bibkey: Optional[str] = None  # set when source == "bib_url"
+    status: Optional[int] = None  # final HTTP status, or None if no response
+    ok: bool = False
+    error: Optional[str] = None  # short failure description, or None on success
+
+
 class IngestedPaper(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
@@ -91,6 +108,7 @@ class IngestedPaper(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     unused_bibkeys: list[str] = Field(default_factory=list)
     broken_refs: list[BrokenRef] = Field(default_factory=list)
+    link_checks: list[LinkCheck] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):

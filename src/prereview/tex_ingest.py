@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .ingest import _surrounding_sentence
-from .models import BrokenRef, Citation, IngestedPaper, Reference
+from .models import BrokenRef, Citation, IngestedPaper, LinkCheck, Reference
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -503,6 +503,74 @@ def find_broken_refs(tex_text: str) -> list[BrokenRef]:
     return out
 
 
+_URL_CMD_RE = re.compile(r"\\(url|href)\s*\{([^{}]+)\}")
+
+
+def _normalize_url(raw: str) -> Optional[str]:
+    """Trim, prepend a scheme if missing, drop empty/javascript: junk.
+
+    Returns None for values that don't look like a URL after cleaning.
+    """
+    s = raw.strip().rstrip(".,;)")
+    if not s:
+        return None
+    low = s.lower()
+    if low.startswith(("mailto:", "javascript:", "tel:", "data:")):
+        return None
+    if not low.startswith(("http://", "https://", "ftp://")):
+        # Common case in .bib: url = {github.com/foo/bar} — assume https.
+        if "." not in s.split("/", 1)[0]:
+            return None  # not host-shaped
+        s = "https://" + s
+    return s
+
+
+def extract_urls(
+    tex_text: str,
+    references: dict[str, Reference],
+) -> list[LinkCheck]:
+    """Pull URLs from a .tex body and its sibling .bib references.
+
+    Returns a list of unconfirmed :class:`LinkCheck` entries (status fields
+    blank). The actual reachability probing happens in :mod:`link_health`.
+
+    Comments are stripped from the .tex first to avoid checking commented-out
+    URLs. Duplicates across sources are kept (a URL appearing both in a
+    ``\\url{}`` and a ``url = {...}`` bibliography entry should be flagged
+    once per location, since the user may want to fix one and not the other).
+    """
+    text = re.sub(r"(?<!\\)%[^\n]*", "", tex_text)
+
+    seen_pairs: set[tuple[str, str, Optional[str]]] = set()
+    out: list[LinkCheck] = []
+
+    for m in _URL_CMD_RE.finditer(text):
+        cmd = m.group(1)
+        url = _normalize_url(m.group(2))
+        if not url:
+            continue
+        source = "tex_url" if cmd == "url" else "tex_href"
+        sig = (source, url, None)
+        if sig in seen_pairs:
+            continue
+        seen_pairs.add(sig)
+        out.append(LinkCheck(url=url, source=source))
+
+    for ref_id, ref in references.items():
+        if not ref.url:
+            continue
+        url = _normalize_url(ref.url)
+        if not url:
+            continue
+        sig = ("bib_url", url, ref_id)
+        if sig in seen_pairs:
+            continue
+        seen_pairs.add(sig)
+        out.append(LinkCheck(url=url, source="bib_url", bibkey=ref_id))
+
+    return out
+
+
 def find_unused_bibkeys(
     references: dict[str, Reference],
     citations: list[Citation],
@@ -560,11 +628,14 @@ async def ingest_tex(
 
     broken_refs = find_broken_refs(tex_text)
     unused_bibkeys = find_unused_bibkeys(references, citations)
+    link_checks = extract_urls(tex_text, references)
     if verbose:
         if broken_refs:
             _log(verbose, f"found {len(broken_refs)} broken \\ref/\\cref targets")
         if unused_bibkeys:
             _log(verbose, f"found {len(unused_bibkeys)} bib entries that are never cited")
+        if link_checks:
+            _log(verbose, f"found {len(link_checks)} URLs to probe in stage 1.5")
 
     return IngestedPaper(
         title=title,
@@ -574,4 +645,5 @@ async def ingest_tex(
         citations=citations,
         unused_bibkeys=unused_bibkeys,
         broken_refs=broken_refs,
+        link_checks=link_checks,
     )

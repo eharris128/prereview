@@ -14,6 +14,7 @@ from prereview.tex_ingest import (
     bib_to_reference,
     extract_abstract,
     extract_title,
+    extract_urls,
     find_bib_file,
     find_broken_refs,
     find_citations_tex,
@@ -298,6 +299,64 @@ def test_find_unused_bibkeys_lists_uncited_entries():
 
     out = find_unused_bibkeys(refs_with_ghosts, citations)
     assert out == ["unused1", "unused2"]
+
+
+def test_extract_urls_pulls_url_and_href_from_tex():
+    tex = r"""
+    See \url{https://github.com/foo/bar} for code.
+    Also \href{https://example.org/page}{the project page}.
+    Commented out: % \url{https://commented.org}
+    """
+    out = extract_urls(tex, references={})
+    urls = {(c.source, c.url) for c in out}
+    assert ("tex_url", "https://github.com/foo/bar") in urls
+    assert ("tex_href", "https://example.org/page") in urls
+    # Commented URL should not appear.
+    assert all("commented.org" not in c.url for c in out)
+
+
+def test_extract_urls_pulls_bib_url_and_tags_bibkey():
+    bib_text = """
+    @misc{repo, author={X}, title={t}, year={2023}, url={https://github.com/x/y}}
+    @article{noiurl, author={Y}, title={t}, year={2023}}
+    """
+    refs = {k: bib_to_reference(k, v) for k, v in parse_bib(bib_text).items()}
+    out = extract_urls("", refs)
+    assert len(out) == 1
+    assert out[0].source == "bib_url"
+    assert out[0].url == "https://github.com/x/y"
+    assert out[0].bibkey == "repo"
+
+
+def test_extract_urls_normalizes_missing_scheme():
+    """A bare github.com/foo/bar in the .bib should get https:// prepended."""
+    bib_text = """
+    @misc{r, author={X}, title={t}, year={2023}, url={github.com/foo/bar}}
+    """
+    refs = {k: bib_to_reference(k, v) for k, v in parse_bib(bib_text).items()}
+    out = extract_urls("", refs)
+    assert len(out) == 1
+    assert out[0].url == "https://github.com/foo/bar"
+
+
+def test_extract_urls_skips_mailto_and_javascript():
+    tex = r"\url{mailto:author@example.org} \url{javascript:alert(1)} \url{https://ok.example.org}"
+    out = extract_urls(tex, references={})
+    urls = {c.url for c in out}
+    assert urls == {"https://ok.example.org"}
+
+
+def test_extract_urls_dedupes_within_same_source():
+    """Two \\url{...} of the same URL should yield one entry; same URL appearing
+    in both .tex and .bib should yield two (different sources, both worth flagging)."""
+    bib_text = """
+    @misc{r, author={X}, title={t}, year={2023}, url={https://github.com/x/y}}
+    """
+    refs = {k: bib_to_reference(k, v) for k, v in parse_bib(bib_text).items()}
+    tex = r"\url{https://github.com/x/y} and again \url{https://github.com/x/y}."
+    out = extract_urls(tex, refs)
+    sources = sorted(c.source for c in out)
+    assert sources == ["bib_url", "tex_url"]
 
 
 def test_ingest_tex_populates_hygiene_fields(tmp_path: Path):

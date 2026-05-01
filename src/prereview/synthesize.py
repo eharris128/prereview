@@ -278,7 +278,8 @@ def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
     broken = paper.broken_refs
     unused = paper.unused_bibkeys
     retracted = _retracted_groups(bundle.verifications)
-    if not broken and not unused and not retracted:
+    bad_links = [c for c in paper.link_checks if not c.ok]
+    if not broken and not unused and not retracted and not bad_links:
         return None
 
     out: list[str] = ["## Hygiene checks", ""]
@@ -336,6 +337,26 @@ def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
             out.append(f"- `{key}`")
         out.append("")
 
+    if bad_links:
+        n_total = len(paper.link_checks)
+        out.append(f"### Unreachable URLs ({len(bad_links)} of {n_total})")
+        out.append("")
+        out.append(
+            "URLs surfaced from `\\url{}` / `\\href{}` in the .tex and `url = {...}` "
+            "fields in the .bib that did not resolve to a 2xx/3xx response. "
+            "Reviewers click these — broken links are an easy fix that signal care."
+        )
+        out.append("")
+        for c in bad_links:
+            origin = {
+                "tex_url": "\\url{}",
+                "tex_href": "\\href{}",
+                "bib_url": f".bib `{c.bibkey}`" if c.bibkey else ".bib `url=`",
+            }.get(c.source, c.source)
+            reason = c.error or (f"HTTP {c.status}" if c.status else "no response")
+            out.append(f"- {c.url} — {reason} _(from {origin})_")
+        out.append("")
+
     return "\n".join(out)
 
 
@@ -345,6 +366,13 @@ def render_methodology(bundle: ReviewBundle) -> str:
     n_broken = len(bundle.paper.broken_refs)
     n_unused = len(bundle.paper.unused_bibkeys)
     n_retracted = len(_retracted_groups(bundle.verifications))
+    n_links = len(bundle.paper.link_checks)
+    n_bad_links = sum(1 for c in bundle.paper.link_checks if not c.ok)
+    link_clause = (
+        f", {n_bad_links} of {n_links} URL{'s' if n_links != 1 else ''} unreachable"
+        if n_links
+        else ""
+    )
     hygiene_line = (
         f"Source-level hygiene checks ran on the .tex source: "
         f"{n_broken} broken cross-reference{'' if n_broken == 1 else 's'} "
@@ -352,7 +380,7 @@ def render_methodology(bundle: ReviewBundle) -> str:
         f"{n_unused} unused bibliography entr{'y' if n_unused == 1 else 'ies'} "
         f"(in the .bib but never \\cite-d), "
         f"{n_retracted} retracted citation{'' if n_retracted == 1 else 's'} "
-        f"(per OpenAlex / Retraction Watch)."
+        f"(per OpenAlex / Retraction Watch){link_clause}."
     )
     return textwrap.dedent(f"""
     ## Methodology and limits of this review

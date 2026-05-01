@@ -10,6 +10,7 @@ from typing import Optional
 
 from .cache import Cache
 from .ingest import ingest_pdf
+from .link_health import check_links
 from .models import ReviewBundle, VerificationResult, Verdict
 from .resolve import Resolver
 from .synthesize import synthesize_review
@@ -54,6 +55,12 @@ async def run_pipeline(
         _log(verbose, f"Stage 1: ingesting (pdf mode) {pdf_path}")
         paper = await ingest_pdf(pdf_path, model=model, verbose=verbose)
     _log(verbose, f"  parsed {len(paper.references)} references, {len(paper.citations)} in-text citations")
+
+    if paper.link_checks:
+        _log(verbose, f"Stage 1.5: probing {len(paper.link_checks)} URLs for reachability")
+        paper.link_checks = await check_links(paper.link_checks, verbose=verbose)
+        n_bad = sum(1 for c in paper.link_checks if not c.ok)
+        _log(verbose, f"  {n_bad} URL{'s' if n_bad != 1 else ''} unreachable")
 
     _log(verbose, "Stage 2: resolving references")
     canonical_by_ref: dict[str, object] = {}
