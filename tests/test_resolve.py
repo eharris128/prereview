@@ -279,6 +279,114 @@ async def test_resolve_uses_cache_on_second_call(fast_resolver):
 
 
 @pytest.mark.asyncio
+async def test_resolve_picks_up_openalex_retraction_flag(fast_resolver):
+    """When OpenAlex itself is the resolver hit, the canonical record's
+    is_retracted flag should be populated directly from OpenAlex's payload."""
+    ref = Reference(
+        ref_id="r1",
+        raw_text="x",
+        title="A Toy Paper About Toys",
+        doi="10.1234/example",
+    )
+    retracted = json.loads(json.dumps(OPENALEX_DOI_HIT))
+    retracted["is_retracted"] = True
+    with respx.mock() as mock:
+        mock.get(host="api.crossref.org").respond(404)
+        mock.get(host="api.semanticscholar.org").respond(404)
+        mock.get(host="export.arxiv.org").respond(text="<feed/>")
+        mock.get(
+            "https://api.openalex.org/works/doi:10.1234%2Fexample"
+        ).respond(json=retracted)
+        async with fast_resolver() as r:
+            rec = await r.resolve(ref)
+    assert rec is not None
+    assert rec.source == "openalex"
+    assert rec.is_retracted is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_cross_checks_openalex_for_retraction_when_crossref_hits(fast_resolver):
+    """When a non-OpenAlex source resolves the reference, we still check
+    OpenAlex for the retraction flag — it's the only source that mirrors
+    Retraction Watch reliably."""
+    ref = Reference(
+        ref_id="r1",
+        raw_text="x",
+        authors=["Alice Smith"],
+        title="A Toy Paper About Toys",
+        doi="10.1234/example",
+    )
+    retracted = json.loads(json.dumps(OPENALEX_DOI_HIT))
+    retracted["is_retracted"] = True
+    with respx.mock() as mock:
+        mock.get(
+            "https://api.crossref.org/works/10.1234%2Fexample"
+        ).respond(json=CROSSREF_DOI_HIT)
+        oa_route = mock.get(
+            "https://api.openalex.org/works/doi:10.1234%2Fexample"
+        ).respond(json=retracted)
+        async with fast_resolver() as r:
+            rec = await r.resolve(ref)
+    assert rec is not None
+    assert rec.source == "crossref"  # Crossref still wins as the primary source
+    assert rec.is_retracted is True  # but retraction came from the OpenAlex follow-up
+    assert oa_route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_retraction_check_failure_does_not_break_resolve(fast_resolver):
+    """If the OpenAlex retraction follow-up errors, we keep the primary record
+    (better to miss a retraction than to refuse to resolve a paper)."""
+    ref = Reference(
+        ref_id="r1",
+        raw_text="x",
+        authors=["Alice Smith"],
+        title="A Toy Paper About Toys",
+        doi="10.1234/example",
+    )
+    with respx.mock() as mock:
+        mock.get(
+            "https://api.crossref.org/works/10.1234%2Fexample"
+        ).respond(json=CROSSREF_DOI_HIT)
+        mock.get(
+            "https://api.openalex.org/works/doi:10.1234%2Fexample"
+        ).respond(500)
+        async with fast_resolver() as r:
+            rec = await r.resolve(ref)
+    assert rec is not None
+    assert rec.source == "crossref"
+    assert rec.is_retracted is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_retraction_check_when_no_doi(fast_resolver):
+    """No DOI means we have no way to look up retraction in OpenAlex; the
+    follow-up call should be skipped rather than triggering a search."""
+    ref = Reference(
+        ref_id="r1",
+        raw_text="x",
+        title="A Toy Paper About Toys",
+        authors=["Alice Smith"],
+        arxiv_id="2401.12345",
+    )
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(host="api.crossref.org").respond(json={"message": {"items": []}})
+        mock.get(host="api.semanticscholar.org").respond(404)
+        mock.get(host="api.semanticscholar.org", path="/graph/v1/paper/search").respond(
+            json={"data": []}
+        )
+        mock.get(host="export.arxiv.org").respond(text=ARXIV_FEED)
+        # Any OpenAlex hit should not happen — the arXiv record has no DOI.
+        oa_route = mock.get(host="api.openalex.org")
+        async with fast_resolver() as r:
+            rec = await r.resolve(ref)
+    assert rec is not None
+    assert rec.source == "arxiv"
+    assert rec.is_retracted is False
+    assert oa_route.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_resolve_rejects_title_mismatch(fast_resolver):
     """Crossref returns a paper whose title doesn't match — should reject and fall through."""
     ref = Reference(

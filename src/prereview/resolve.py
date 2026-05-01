@@ -196,6 +196,17 @@ class Resolver:
                 _log(self.verbose, f"{ref.ref_id}: {label} errored: {e!r}")
                 continue
             if rec is not None:
+                # OpenAlex mirrors Retraction Watch's data via its `is_retracted`
+                # field. For hits from other sources, do a follow-up OpenAlex
+                # lookup (DOI required) so we always know whether the cited
+                # paper has been retracted. Cached with the record, so this
+                # extra call only runs the first time a reference is resolved.
+                if not rec.is_retracted and rec.source != "openalex" and rec.doi:
+                    try:
+                        if await self._openalex_is_retracted(rec.doi):
+                            rec.is_retracted = True
+                    except Exception as e:
+                        _log(self.verbose, f"{ref.ref_id}: retraction check failed: {e!r}")
                 self.cache.put_record(key, rec)
                 return rec
         return None
@@ -311,6 +322,24 @@ class Resolver:
             if cand and _title_matches(ref.title, [cand.title]):
                 return cand
         return None
+
+    async def _openalex_is_retracted(self, doi: str) -> bool:
+        """Lightweight retraction-only OpenAlex check by DOI.
+
+        Used as a follow-up when the primary resolver hit was Crossref / S2 /
+        arXiv (none of which expose retraction status reliably). Returns False
+        on any non-200 / parse error — a missed retraction is preferable to a
+        false positive that would scare a user about a perfectly valid paper.
+        """
+        params = {}
+        if self.polite_mailto:
+            params["mailto"] = self.polite_mailto
+        await self._g_openalex.wait()
+        url = f"https://api.openalex.org/works/doi:{quote(doi, safe='')}"
+        r = await self.client.get(url, params=params)
+        if r.status_code != 200:
+            return False
+        return bool(r.json().get("is_retracted"))
 
     async def _openalex(self, ref: Reference, doi: Optional[str]) -> Optional[CanonicalRecord]:
         params = {}
@@ -532,6 +561,7 @@ def _openalex_to_record(item: dict) -> CanonicalRecord:
         url=doi_url or item.get("id"),
         abstract=abstract,
         open_access_pdf_url=oa.get("oa_url") if isinstance(oa, dict) else None,
+        is_retracted=bool(item.get("is_retracted")),
     )
 
 

@@ -113,6 +113,8 @@ def _render_resolved_record(canonical) -> list[str]:
             "Crossref, Semantic Scholar, arXiv, or OpenAlex._"
         ]
     lines = ["**Resolved record:**", ""]
+    if canonical.is_retracted:
+        lines.append("- ⚠ **RETRACTED** — this paper has been retracted.")
     lines.append(f"- Source: `{canonical.source}`")
     lines.append(f"- Title: {canonical.title or '_(unknown)_'}")
     if canonical.authors:
@@ -249,28 +251,64 @@ def _quote(s: str) -> str:
     return f"> {s}"
 
 
+def _retracted_groups(
+    verifications: list[VerificationResult],
+) -> dict[str, list[VerificationResult]]:
+    """Group verifications whose resolved canonical record is retracted, by
+    bibkey. Every cite site of a retracted paper is preserved so the user can
+    see which sentences depend on retracted work."""
+    groups: dict[str, list[VerificationResult]] = {}
+    for v in verifications:
+        if v.canonical is not None and v.canonical.is_retracted:
+            groups.setdefault(v.reference.ref_id, []).append(v)
+    return groups
+
+
 def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
     """Markdown for the Hygiene checks section, or None if there's nothing
     to surface.
 
-    Reports two classes of source-level issue that the rest of the pipeline
-    can't see (since they're about .tex structure rather than citation
-    semantics): broken cross-references (\\ref to a non-existent \\label) and
-    unused bibliography entries (in the .bib but never \\cite-d).
+    Reports source- and metadata-level issues that the per-citation Citation
+    Issues section can't see on its own: retractions (which can apply even to
+    a paper that supports its claim), broken cross-references (\\ref to a
+    non-existent \\label), and unused bibliography entries (in the .bib but
+    never \\cite-d).
     """
     paper = bundle.paper
     broken = paper.broken_refs
     unused = paper.unused_bibkeys
-    if not broken and not unused:
+    retracted = _retracted_groups(bundle.verifications)
+    if not broken and not unused and not retracted:
         return None
 
     out: list[str] = ["## Hygiene checks", ""]
     out.append(
-        "Source-level issues detected by parsing the .tex and .bib directly. "
+        "Source-level issues detected by parsing the .tex and .bib directly, "
+        "plus metadata-level red flags from the resolver (retractions). "
         "These are mechanical findings — the kind a copyeditor or pre-submission "
         "checklist would catch."
     )
     out.append("")
+
+    if retracted:
+        out.append(f"### ⚠ Retracted citations ({len(retracted)})")
+        out.append("")
+        out.append(
+            "The cited paper has been retracted (per OpenAlex / Retraction Watch). "
+            "Even if the cited claim is technically supported, citing a retracted "
+            "paper is almost always a problem — verify in person and either drop "
+            "the citation or explicitly justify it."
+        )
+        out.append("")
+        for ref_id, sites in retracted.items():
+            n = len(sites)
+            canonical = sites[0].canonical
+            doi_str = ""
+            if canonical and canonical.doi:
+                doi_str = f" — DOI [{canonical.doi}](https://doi.org/{canonical.doi})"
+            site_str = f"{n} cite site{'s' if n != 1 else ''}"
+            out.append(f"- `{ref_id}` ({site_str}){doi_str}")
+        out.append("")
 
     if broken:
         out.append(f"### Broken cross-references ({len(broken)})")
@@ -306,12 +344,15 @@ def render_methodology(bundle: ReviewBundle) -> str:
     flagged = sum(1 for v in bundle.verifications if _is_problematic(v))
     n_broken = len(bundle.paper.broken_refs)
     n_unused = len(bundle.paper.unused_bibkeys)
+    n_retracted = len(_retracted_groups(bundle.verifications))
     hygiene_line = (
         f"Source-level hygiene checks ran on the .tex source: "
         f"{n_broken} broken cross-reference{'' if n_broken == 1 else 's'} "
         f"(\\ref/\\cref to a non-existent \\label), "
         f"{n_unused} unused bibliography entr{'y' if n_unused == 1 else 'ies'} "
-        f"(in the .bib but never \\cite-d)."
+        f"(in the .bib but never \\cite-d), "
+        f"{n_retracted} retracted citation{'' if n_retracted == 1 else 's'} "
+        f"(per OpenAlex / Retraction Watch)."
     )
     return textwrap.dedent(f"""
     ## Methodology and limits of this review

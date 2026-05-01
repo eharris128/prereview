@@ -277,6 +277,119 @@ def test_render_hygiene_section_returns_none_when_clean():
     assert syn.render_hygiene_section(bundle) is None
 
 
+def _v_retracted(ref_id="retracted_paper", sentence=None) -> VerificationResult:
+    """A verification whose canonical record is flagged as retracted."""
+    ref = Reference(
+        ref_id=ref_id,
+        raw_text=f"[{ref_id}] Wakefield. Wrong Paper. 1998.",
+        authors=["A. Wakefield"],
+        title="Wrong Paper",
+        year=1998,
+    )
+    sentence = sentence or f"We rely on prior findings [{ref_id}]."
+    return VerificationResult(
+        ref_id=ref_id,
+        citation=Citation(ref_id=ref_id, sentence=sentence),
+        reference=ref,
+        canonical=CanonicalRecord(
+            source="openalex",
+            title="Wrong Paper",
+            authors=["A. Wakefield"],
+            year=1998,
+            doi="10.1234/retracted",
+            url="https://doi.org/10.1234/retracted",
+            abstract="abstract",
+            is_retracted=True,
+        ),
+        verdict=Verdict.SUPPORTS,
+        rationale="abstract supports the claim",
+        abstract_only=False,
+        role=CitationRole.CLAIM_SUPPORT,
+    )
+
+
+def test_render_hygiene_section_surfaces_retractions_even_when_otherwise_clean():
+    """A retracted-but-otherwise-supports cite should appear in Hygiene even
+    when there are no broken refs or unused bibkeys — it's exactly the case
+    Citation Issues would silently miss."""
+    v = _v_retracted()
+    paper = IngestedPaper(
+        title="A Paper",
+        references={v.reference.ref_id: v.reference},
+        citations=[v.citation],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[v], model="m", synthesis_model="s")
+    md = syn.render_hygiene_section(bundle)
+    assert md is not None
+    assert "Retracted citations (1)" in md
+    assert "retracted_paper" in md
+    assert "1 cite site" in md
+    assert "10.1234/retracted" in md
+
+
+def test_render_hygiene_section_groups_retraction_by_bibkey():
+    """A retracted paper cited at multiple sites groups into one entry with
+    the cite-site count."""
+    v1 = _v_retracted(sentence="We follow prior work [retracted_paper].")
+    v2 = _v_retracted(sentence="As shown in earlier studies [retracted_paper].")
+    paper = IngestedPaper(
+        title="A Paper",
+        references={v1.reference.ref_id: v1.reference},
+        citations=[v1.citation, v2.citation],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[v1, v2], model="m", synthesis_model="s")
+    md = syn.render_hygiene_section(bundle)
+    assert md is not None
+    assert "Retracted citations (1)" in md
+    assert "2 cite sites" in md
+
+
+def test_render_resolved_record_marks_retraction_in_citation_issues():
+    """When a retracted paper is also flagged for non-support, the resolved-
+    record block carries the ⚠ RETRACTED line so the reader doesn't have to
+    cross-check the Hygiene section."""
+    ref = Reference(
+        ref_id="bad",
+        raw_text="[bad] Wakefield. Retracted. 1998.",
+        authors=["A. Wakefield"],
+        title="Retracted",
+    )
+    canonical = CanonicalRecord(
+        source="openalex",
+        title="Retracted",
+        authors=["A. Wakefield"],
+        year=1998,
+        doi="10.1234/retracted",
+        is_retracted=True,
+    )
+    v = VerificationResult(
+        ref_id="bad",
+        citation=Citation(ref_id="bad", sentence="A claim [bad]."),
+        reference=ref,
+        canonical=canonical,
+        verdict=Verdict.DOES_NOT_SUPPORT,
+        rationale="Cited paper does not back the claim.",
+        abstract_only=False,
+    )
+    bundle = _make_bundle([v])
+    md = syn.render_citation_issues(bundle)
+    assert "⚠ **RETRACTED**" in md
+    assert "Does not support" in md
+
+
+def test_render_methodology_includes_retraction_count():
+    v = _v_retracted()
+    paper = IngestedPaper(
+        title="A Paper",
+        references={v.reference.ref_id: v.reference},
+        citations=[v.citation],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[v], model="m", synthesis_model="s")
+    md = syn.render_methodology(bundle)
+    assert "1 retracted citation" in md
+    assert "Retraction Watch" in md
+
+
 def test_render_methodology_mentions_models_and_counts():
     bundle = _make_bundle([
         _v(Verdict.SUPPORTS, ref_id="1", abstract_only=False),
