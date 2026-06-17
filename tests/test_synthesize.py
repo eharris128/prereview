@@ -12,6 +12,8 @@ from prereview import synthesize as syn
 from prereview.models import (
     BrokenRef,
     CanonicalRecord,
+    ChecklistFinding,
+    ChecklistFindingKind,
     Citation,
     CitationRole,
     IngestedPaper,
@@ -471,6 +473,128 @@ def test_render_methodology_mentions_models_and_counts():
     assert "3 in-text citations" in md
     assert "1 bibliography entr" in md  # one ghost
     assert "Missing prior work" in md
+
+
+# ---------------------------------------------------------------------------
+# checklist section
+
+
+def _checklist_bundle(*, found: bool, findings: list[ChecklistFinding]) -> ReviewBundle:
+    paper = IngestedPaper(
+        title="A Paper",
+        references={},
+        citations=[],
+        checklist_found=found,
+        checklist_findings=findings,
+    )
+    return ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+
+
+def _one_of_each_kind() -> list[ChecklistFinding]:
+    return [
+        ChecklistFinding(
+            kind=ChecklistFindingKind.UNANSWERED,
+            section="General Paper Structure",
+            question="Includes a conceptual outline of AI methods introduced",
+        ),
+        ChecklistFinding(
+            kind=ChecklistFindingKind.INVALID_RESPONSE,
+            section="General Paper Structure",
+            question="Clearly delineates opinions from objective facts",
+            response="maybe",
+            detail="allowed: yes, no",
+        ),
+        ChecklistFinding(
+            kind=ChecklistFindingKind.GATE_INCONSISTENCY,
+            section="Theoretical Contributions",
+            question="Does this paper make theoretical contributions?",
+            response="no",
+            detail='answered "no", but 1 of its sub-items carry substantive answers',
+        ),
+        ChecklistFinding(
+            kind=ChecklistFindingKind.CLAIM_UNSUPPORTED,
+            section="Computational Experiments",
+            question="All source code will be made publicly available",
+            response="yes",
+            detail="no a public repository URL (e.g. github.com / zenodo.org) found in the paper — verify",
+        ),
+    ]
+
+
+def test_render_checklist_section_groups_all_kinds():
+    bundle = _checklist_bundle(found=True, findings=_one_of_each_kind())
+    md = syn.render_checklist_section(bundle)
+    assert md is not None
+    assert "## Reproducibility checklist" in md
+    for heading in (
+        "Unanswered items (1)",
+        "Invalid responses (1)",
+        "Gate inconsistencies (1)",
+        "Answers not supported by the paper (1)",
+    ):
+        assert heading in md
+    # Each finding's question is quoted.
+    assert "Includes a conceptual outline of AI methods introduced" in md
+    assert "Clearly delineates opinions from objective facts" in md
+    assert "Does this paper make theoretical contributions?" in md
+    assert "All source code will be made publicly available" in md
+
+
+def test_render_checklist_section_tier2_is_advisory_not_accusatory():
+    findings = [f for f in _one_of_each_kind() if f.kind == ChecklistFindingKind.CLAIM_UNSUPPORTED]
+    bundle = _checklist_bundle(found=True, findings=findings)
+    md = syn.render_checklist_section(bundle)
+    assert md is not None
+    assert "verify" in md.lower()
+    # No accusatory language.
+    for bad in ("lied", "false", "dishonest", "untruthful"):
+        assert bad not in md.lower()
+
+
+def test_render_checklist_section_clean_when_found_but_no_findings():
+    bundle = _checklist_bundle(found=True, findings=[])
+    md = syn.render_checklist_section(bundle)
+    assert md is not None
+    assert "## Reproducibility checklist" in md
+    assert "no unanswered" in md.lower() or "no issues" in md.lower()
+
+
+def test_render_checklist_section_none_when_not_found():
+    bundle = _checklist_bundle(found=False, findings=[])
+    assert syn.render_checklist_section(bundle) is None
+
+
+def test_stitch_omits_checklist_section_when_not_found():
+    bundle = _checklist_bundle(found=False, findings=[])
+    md = syn.stitch_review({"summary": "s"}, bundle)
+    assert "## Reproducibility checklist" not in md
+
+
+def test_stitch_includes_checklist_section_when_found():
+    bundle = _checklist_bundle(found=True, findings=_one_of_each_kind())
+    md = syn.stitch_review({"summary": "s"}, bundle)
+    assert "## Reproducibility checklist" in md
+    # Rendered after Hygiene (when present) and before Questions.
+    assert md.index("## Reproducibility checklist") < md.index("## Questions for the author")
+
+
+def test_render_methodology_checklist_line_found_and_flagged():
+    bundle = _checklist_bundle(found=True, findings=_one_of_each_kind())
+    md = syn.render_methodology(bundle)
+    assert "reproducibility checklist was located and linted" in md.lower()
+    assert "4 issue(s) flagged" in md
+
+
+def test_render_methodology_checklist_line_found_and_clean():
+    bundle = _checklist_bundle(found=True, findings=[])
+    md = syn.render_methodology(bundle)
+    assert "no issues flagged" in md.lower()
+
+
+def test_render_methodology_omits_checklist_line_when_not_found():
+    bundle = _checklist_bundle(found=False, findings=[])
+    md = syn.render_methodology(bundle)
+    assert "checklist" not in md.lower()
 
 
 @pytest.mark.asyncio

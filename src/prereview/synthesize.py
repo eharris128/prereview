@@ -17,7 +17,14 @@ import textwrap
 from typing import Iterable, Optional
 
 from .llm import acompletion_json
-from .models import CitationRole, ReviewBundle, VerificationResult, Verdict
+from .models import (
+    ChecklistFinding,
+    ChecklistFindingKind,
+    CitationRole,
+    ReviewBundle,
+    VerificationResult,
+    Verdict,
+)
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -360,6 +367,97 @@ def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
     return "\n".join(out)
 
 
+# Fixed render order; also the only place finding kinds map to user-facing labels.
+_CHECKLIST_SUBHEADINGS: dict[ChecklistFindingKind, str] = {
+    ChecklistFindingKind.UNANSWERED: "Unanswered items",
+    ChecklistFindingKind.INVALID_RESPONSE: "Invalid responses",
+    ChecklistFindingKind.GATE_INCONSISTENCY: "Gate inconsistencies",
+    ChecklistFindingKind.CLAIM_UNSUPPORTED: "Answers not supported by the paper",
+}
+
+
+def _checklist_counts(findings: list[ChecklistFinding]) -> dict[ChecklistFindingKind, int]:
+    counts = {k: 0 for k in ChecklistFindingKind}
+    for f in findings:
+        counts[f.kind] += 1
+    return counts
+
+
+def _checklist_bullet(f: ChecklistFinding) -> str:
+    loc = f"_{f.section}_: " if f.section else ""
+    question = (f.question or "").strip()
+    line = f'- {loc}"{question}"'
+    if f.kind == ChecklistFindingKind.INVALID_RESPONSE:
+        line += f' — responded "{f.response}" ({f.detail})'
+    elif f.kind == ChecklistFindingKind.GATE_INCONSISTENCY:
+        line += f" — {f.detail}"
+    elif f.kind == ChecklistFindingKind.CLAIM_UNSUPPORTED:
+        line += f' — responded "{f.response}"; {f.detail}' if f.response else f" — {f.detail}"
+    return line
+
+
+def render_checklist_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Reproducibility checklist section, or None when no
+    checklist was found.
+
+    Mirrors :func:`render_hygiene_section`'s contract: returns None when there's
+    nothing to anchor a section on (no checklist located), a short confirmation
+    when a checklist was found but is clean, and a grouped breakdown otherwise.
+    The tier-2 "answers not supported by the paper" group is framed as "verify",
+    never as an accusation — these are presence checks, not truth judgements.
+    """
+    paper = bundle.paper
+    if not paper.checklist_found:
+        return None
+    findings = paper.checklist_findings
+
+    out: list[str] = ["## Reproducibility checklist", ""]
+    if not findings:
+        out.append(
+            "The reproducibility checklist was located and parsed; no unanswered "
+            "items, invalid responses, gate inconsistencies, or unsupported "
+            "answers were detected."
+        )
+        out.append("")
+        return "\n".join(out)
+
+    out.append(
+        "Deterministic checks against the venue reproducibility checklist, parsed "
+        "from the .tex source. Self-consistency findings need only the checklist; "
+        'the "answers not supported by the paper" findings are presence checks '
+        "against the paper body — the checklist answer may still be correct, so "
+        'treat them as "verify", not as accusations.'
+    )
+    out.append("")
+
+    for kind, heading in _CHECKLIST_SUBHEADINGS.items():
+        group = [f for f in findings if f.kind == kind]
+        if not group:
+            continue
+        out.append(f"### {heading} ({len(group)})")
+        out.append("")
+        out.extend(_checklist_bullet(f) for f in group)
+        out.append("")
+
+    return "\n".join(out)
+
+
+def _checklist_methodology_sentence(bundle: ReviewBundle) -> str:
+    cf = bundle.paper.checklist_findings
+    if not cf:
+        return "A reproducibility checklist was located and linted: no issues flagged."
+    counts = _checklist_counts(cf)
+    return (
+        f"A reproducibility checklist was located and linted: {len(cf)} issue(s) flagged "
+        f"({counts[ChecklistFindingKind.UNANSWERED]} unanswered, "
+        f"{counts[ChecklistFindingKind.INVALID_RESPONSE]} invalid, "
+        f"{counts[ChecklistFindingKind.GATE_INCONSISTENCY]} gate inconsistency(ies), "
+        f"{counts[ChecklistFindingKind.CLAIM_UNSUPPORTED]} not evidenced in the paper). "
+        "The claim-vs-paper cross-checks are presence-based and advisory — they flag "
+        "missing supporting evidence, not incorrect answers."
+    )
+
+
 def render_methodology(bundle: ReviewBundle) -> str:
     total = len(bundle.verifications)
     flagged = sum(1 for v in bundle.verifications if _is_problematic(v))
@@ -382,6 +480,9 @@ def render_methodology(bundle: ReviewBundle) -> str:
         f"{n_retracted} retracted citation{'' if n_retracted == 1 else 's'} "
         f"(per OpenAlex / Retraction Watch){link_clause}."
     )
+    if bundle.paper.checklist_found:
+        # 4-space indent + blank line so it dedents uniformly with the template below.
+        hygiene_line += "\n\n    " + _checklist_methodology_sentence(bundle)
     return textwrap.dedent(f"""
     ## Methodology and limits of this review
 
@@ -567,6 +668,9 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
     hygiene = render_hygiene_section(bundle)
     if hygiene is not None:
         sections.append(hygiene.strip())
+    checklist = render_checklist_section(bundle)
+    if checklist is not None:
+        sections.append(checklist.strip())
     sections.extend(
         [
             "## Questions for the author",
