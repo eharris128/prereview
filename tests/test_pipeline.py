@@ -227,3 +227,146 @@ async def test_pipeline_backs_up_existing_review(tmp_path: Path, monkeypatch, fa
     assert len(backups) == 1
     assert backups[0].read_text() == "OLD REVIEW"
     assert out.read_text() == "# new review\n"
+
+
+# ---------------------------------------------------------------------------
+# checklist linter thread-through (.tex mode)
+
+
+class _NoOpCtx:
+    def __init__(self, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    async def resolve(self, ref):
+        return None
+
+    async def verify(self, *a, **kw):
+        raise AssertionError("verify should not be called when there are no citations")
+
+
+_CHECKLIST_TEX = r"""
+\checksubsection{Computational Experiments}
+\begin{itemize}
+\question{Does this paper include computational experiments?}{(yes/no)}
+yes
+\ifyespoints{If yes, please address the following points:}
+\begin{itemize}
+\question{All source code required for conducting and analyzing the experiments will be made publicly available upon publication of the paper}{(yes/partial/no)}
+yes
+\end{itemize}
+\end{itemize}
+"""
+
+
+def _tex_project(tmp_path: Path) -> Path:
+    (tmp_path / "ReproducibilityChecklist.tex").write_text(_CHECKLIST_TEX)
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\title{Toy}
+\begin{document}
+\section{Intro}
+We run experiments. No repository URL appears anywhere in this paper.
+\end{document}
+"""
+    )
+    return tex
+
+
+@pytest.mark.asyncio
+async def test_pipeline_tex_mode_runs_checklist(tmp_path: Path, monkeypatch):
+    from prereview.models import ChecklistFindingKind
+
+    tex = _tex_project(tmp_path)
+
+    captured: dict = {}
+
+    async def fake_synth(bundle, *, verbose=False):
+        captured["bundle"] = bundle
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "Resolver", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "Verifier", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    await pipeline.run_pipeline(
+        tex,
+        out=tmp_path / "paper.review.md",
+        model="m",
+        synthesis_model="s",
+        fetch_cited=False,
+        cache_dir=tmp_path / "cache",
+    )
+
+    bundle = captured["bundle"]
+    assert bundle.paper.checklist_found is True
+    assert any(
+        f.kind == ChecklistFindingKind.CLAIM_UNSUPPORTED for f in bundle.paper.checklist_findings
+    )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_no_checklist_flag_threads_through(tmp_path: Path, monkeypatch):
+    tex = _tex_project(tmp_path)
+
+    captured: dict = {}
+
+    async def fake_synth(bundle, *, verbose=False):
+        captured["bundle"] = bundle
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "Resolver", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "Verifier", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    await pipeline.run_pipeline(
+        tex,
+        out=tmp_path / "paper.review.md",
+        model="m",
+        synthesis_model="s",
+        fetch_cited=False,
+        cache_dir=tmp_path / "cache",
+        run_checklist=False,
+    )
+
+    bundle = captured["bundle"]
+    assert bundle.paper.checklist_found is False
+    assert bundle.paper.checklist_findings == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_pdf_mode_leaves_checklist_defaults(tmp_path: Path, monkeypatch):
+    """The checklist linter is TeX-only; a PDF input never touches its fields."""
+    pdf = tmp_path / "draft.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    async def fake_ingest(pdf_path, *, model, verbose=False):
+        return IngestedPaper(title="t", references={}, citations=[])
+
+    captured: dict = {}
+
+    async def fake_synth(bundle, *, verbose=False):
+        captured["bundle"] = bundle
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
+    monkeypatch.setattr(pipeline, "Resolver", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "Verifier", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    await pipeline.run_pipeline(
+        pdf,
+        out=tmp_path / "draft.review.md",
+        model="m",
+        synthesis_model="s",
+        fetch_cited=False,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert captured["bundle"].paper.checklist_found is False

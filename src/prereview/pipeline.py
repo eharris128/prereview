@@ -42,6 +42,8 @@ async def run_pipeline(
     cache_dir: Optional[Path] = None,
     polite_mailto: Optional[str] = None,
     bib_path: Optional[Path] = None,
+    checklist_path: Optional[Path] = None,
+    run_checklist: bool = True,
     verbose: bool = False,
 ) -> Path:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -50,7 +52,14 @@ async def run_pipeline(
     suffix = pdf_path.suffix.lower()
     if suffix == ".tex":
         _log(verbose, f"Stage 1: ingesting (tex mode) {pdf_path}")
-        paper = await ingest_tex(pdf_path, model=model, verbose=verbose, bib_path=bib_path)
+        paper = await ingest_tex(
+            pdf_path,
+            model=model,
+            verbose=verbose,
+            bib_path=bib_path,
+            checklist_path=checklist_path,
+            run_checklist=run_checklist,
+        )
     else:
         _log(verbose, f"Stage 1: ingesting (pdf mode) {pdf_path}")
         paper = await ingest_pdf(pdf_path, model=model, verbose=verbose)

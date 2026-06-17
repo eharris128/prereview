@@ -37,6 +37,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="(.tex mode only) Explicit path to the .bib file. Default: auto-detect from \\bibliography{} or sibling references.bib.",
     )
     p.add_argument(
+        "--checklist",
+        type=Path,
+        default=None,
+        help="(.tex mode only) Explicit path to a reproducibility checklist .tex (AAAI-27). Default: auto-detect from \\input{...} or sibling ReproducibilityChecklist.tex.",
+    )
+    p.add_argument(
+        "--no-checklist",
+        dest="run_checklist",
+        action="store_false",
+        help="(.tex mode only) Skip the reproducibility-checklist linter even if a checklist is found.",
+    )
+    p.set_defaults(run_checklist=True)
+    p.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -92,6 +105,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
+    checklist_path: Path | None = None
+    if args.checklist is not None:
+        checklist_path = args.checklist.expanduser().resolve()
+        if not checklist_path.exists():
+            parser.error(f"checklist not found: {checklist_path}")
+
     out: Path = (args.out or pdf_path.with_suffix(".review.md")).expanduser().resolve()
 
     _autoload_env(pdf_path)
@@ -113,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
                 cache_dir=args.cache_dir,
                 polite_mailto=args.mailto,
                 bib_path=args.bib,
+                checklist_path=checklist_path,
+                run_checklist=args.run_checklist,
                 verbose=args.verbose,
             )
         )

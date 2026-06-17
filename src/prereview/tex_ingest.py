@@ -18,8 +18,16 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .checklist import (
+    check_claims_vs_paper,
+    check_self_consistency,
+    find_checklist_file,
+    parse_checklist,
+)
 from .ingest import _surrounding_sentence
-from .models import BrokenRef, Citation, IngestedPaper, LinkCheck, Reference
+from .models import BrokenRef, ChecklistFinding, Citation, IngestedPaper, LinkCheck, Reference
+
+_CHECKSUB_RE = re.compile(r"\\checksubsection\b")
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -595,6 +603,8 @@ async def ingest_tex(
     model: str,
     verbose: bool = False,
     bib_path: Optional[Path] = None,
+    checklist_path: Optional[Path] = None,
+    run_checklist: bool = True,
 ) -> IngestedPaper:
     """Ingest a .tex file (and its sibling .bib) into an :class:`IngestedPaper`.
 
@@ -637,6 +647,32 @@ async def ingest_tex(
         if link_checks:
             _log(verbose, f"found {len(link_checks)} URLs to probe in stage 1.5")
 
+    checklist_found = False
+    checklist_findings: list[ChecklistFinding] = []
+    if run_checklist:
+        resolved = find_checklist_file(tex_path, tex_text, explicit=checklist_path)
+        checklist_text: Optional[str] = None
+        if resolved is not None and resolved.exists():
+            _log(verbose, f"reading reproducibility checklist from {resolved}")
+            checklist_text = resolved.read_text(encoding="utf-8", errors="replace")
+        elif _CHECKSUB_RE.search(tex_text):
+            # The checklist was pasted / \input-ed inline into the main .tex.
+            # Cross-checks run against ``body`` here, which includes the checklist
+            # prose — that can only mask evidence (a false negative), never
+            # manufacture a false flag, so it stays on the precision-safe side.
+            _log(verbose, "reproducibility checklist found inline in the main .tex")
+            checklist_text = tex_text
+        if checklist_text is not None:
+            checklist_found = True
+            items = parse_checklist(checklist_text)
+            checklist_findings = check_self_consistency(items) + check_claims_vs_paper(
+                items, body, link_checks
+            )
+            _log(
+                verbose,
+                f"found {len(checklist_findings)} checklist issue(s) across {len(items)} item(s)",
+            )
+
     return IngestedPaper(
         title=title,
         abstract=abstract,
@@ -646,4 +682,6 @@ async def ingest_tex(
         unused_bibkeys=unused_bibkeys,
         broken_refs=broken_refs,
         link_checks=link_checks,
+        checklist_found=checklist_found,
+        checklist_findings=checklist_findings,
     )

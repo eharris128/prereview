@@ -359,6 +359,104 @@ def test_extract_urls_dedupes_within_same_source():
     assert sources == ["bib_url", "tex_url"]
 
 
+# ---------------------------------------------------------------------------
+# checklist linter wiring
+
+
+_CHECKLIST_WITH_UNSUPPORTED_CODE_CLAIM = r"""
+\checksubsection{Computational Experiments}
+\begin{itemize}
+\question{Does this paper include computational experiments?}{(yes/no)}
+yes
+\ifyespoints{If yes, please address the following points:}
+\begin{itemize}
+\question{All source code required for conducting and analyzing the experiments will be made publicly available upon publication of the paper}{(yes/partial/no)}
+yes
+\end{itemize}
+\end{itemize}
+"""
+
+
+def _tex_with_sibling_checklist(tmp_path: Path) -> Path:
+    (tmp_path / "ReproducibilityChecklist.tex").write_text(_CHECKLIST_WITH_UNSUPPORTED_CODE_CLAIM)
+    (tmp_path / "references.bib").write_text("@article{x, author={A}, title={t}, year={2023}}\n")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\title{Toy}
+\begin{document}
+\section{Intro}
+We run experiments \citep{x}. No repository URL appears anywhere.
+\end{document}
+"""
+    )
+    return tex
+
+
+def test_ingest_tex_runs_checklist_linter(tmp_path: Path):
+    """Wiring contract: a sibling checklist with a yes-without-evidence answer
+    must reach IngestedPaper as a claim_unsupported finding."""
+    import asyncio
+
+    from prereview.models import ChecklistFindingKind
+
+    tex = _tex_with_sibling_checklist(tmp_path)
+    paper = asyncio.run(ingest_tex(tex, model="ignored", verbose=False))
+    assert paper.checklist_found is True
+    kinds = {f.kind for f in paper.checklist_findings}
+    assert ChecklistFindingKind.CLAIM_UNSUPPORTED in kinds
+
+
+def test_ingest_tex_no_checklist_leaves_defaults(tmp_path: Path):
+    import asyncio
+
+    bib = tmp_path / "references.bib"
+    bib.write_text("@article{x, author={A}, title={t}, year={2023}}\n")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\begin{document}
+We cite \citep{x}.
+\end{document}
+"""
+    )
+    paper = asyncio.run(ingest_tex(tex, model="ignored", verbose=False))
+    assert paper.checklist_found is False
+    assert paper.checklist_findings == []
+
+
+def test_ingest_tex_no_checklist_flag_skips_linter(tmp_path: Path):
+    import asyncio
+
+    tex = _tex_with_sibling_checklist(tmp_path)
+    paper = asyncio.run(ingest_tex(tex, model="ignored", verbose=False, run_checklist=False))
+    assert paper.checklist_found is False
+    assert paper.checklist_findings == []
+
+
+def test_ingest_tex_explicit_checklist_path(tmp_path: Path):
+    import asyncio
+
+    from prereview.models import ChecklistFindingKind
+
+    explicit = tmp_path / "elsewhere.tex"
+    explicit.write_text(_CHECKLIST_WITH_UNSUPPORTED_CODE_CLAIM)
+    (tmp_path / "references.bib").write_text("@article{x, author={A}, title={t}, year={2023}}\n")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\begin{document}
+We run experiments \citep{x}.
+\end{document}
+"""
+    )
+    paper = asyncio.run(
+        ingest_tex(tex, model="ignored", verbose=False, checklist_path=explicit)
+    )
+    assert paper.checklist_found is True
+    assert any(f.kind == ChecklistFindingKind.CLAIM_UNSUPPORTED for f in paper.checklist_findings)
+
+
 def test_ingest_tex_populates_hygiene_fields(tmp_path: Path):
     """End-to-end: hygiene fields should land on IngestedPaper."""
     import asyncio
