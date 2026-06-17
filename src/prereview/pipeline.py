@@ -11,7 +11,7 @@ from typing import Optional
 from .cache import Cache
 from .ingest import ingest_pdf
 from .link_health import check_links
-from .models import ReviewBundle, VerificationResult, Verdict
+from .models import Resolution, ReviewBundle, VerificationResult, Verdict
 from .resolve import Resolver
 from .synthesize import synthesize_review
 from .tex_ingest import ingest_tex
@@ -72,7 +72,7 @@ async def run_pipeline(
         _log(verbose, f"  {n_bad} URL{'s' if n_bad != 1 else ''} unreachable")
 
     _log(verbose, "Stage 2: resolving references")
-    canonical_by_ref: dict[str, object] = {}
+    canonical_by_ref: dict[str, Resolution] = {}
     async with Resolver(
         cache=cache,
         s2_api_key=s2_key,
@@ -80,10 +80,10 @@ async def run_pipeline(
         verbose=verbose,
     ) as resolver:
         for ref_id, ref in paper.references.items():
-            record = await resolver.resolve(ref)
-            canonical_by_ref[ref_id] = record
+            resolution = await resolver.resolve(ref)
+            canonical_by_ref[ref_id] = resolution
             if verbose:
-                tag = record.source if record else "unresolved"
+                tag = resolution.record.source if resolution.record else resolution.status.value
                 _log(verbose, f"  {ref_id}: {tag}")
 
     _log(verbose, "Stage 3: verifying claim support")
@@ -93,11 +93,12 @@ async def run_pipeline(
             ref = paper.references.get(cit.ref_id)
             if ref is None:
                 continue
-            canonical = canonical_by_ref.get(cit.ref_id)
+            resolution = canonical_by_ref.get(cit.ref_id)
+            canonical = resolution.record if resolution else None
             result = await verifier.verify(
                 cit,
                 ref,
-                canonical,  # type: ignore[arg-type]
+                canonical,
                 model=model,
                 fetch_cited=fetch_cited,
                 verbose=verbose,
@@ -108,7 +109,7 @@ async def run_pipeline(
     fetched_full_text_count = sum(
         1 for v in verifications if not v.abstract_only and v.verdict != Verdict.TARGET_UNAVAILABLE
     )
-    unresolved_count = sum(1 for r in canonical_by_ref.values() if r is None)
+    unresolved_count = sum(1 for res in canonical_by_ref.values() if res.record is None)
 
     bundle = ReviewBundle(
         paper=paper,

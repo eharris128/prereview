@@ -29,6 +29,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 from urllib.parse import quote
 
@@ -36,7 +37,8 @@ import httpx
 
 from . import __version__
 from .cache import Cache, cache_key
-from .models import CanonicalRecord, Reference
+from .http_retry import RetryPolicy, TransientExhausted, get_with_retry
+from .models import CanonicalRecord, Reference, Resolution, ResolutionStatus
 
 log = logging.getLogger("prereview.resolve")
 
@@ -122,6 +124,23 @@ class _SourceConfig:
     openalex_min_interval: float = 0.2    # ~5 RPS
 
 
+# Circuit-breaker thresholds, per source per run. Once a source trips we stop
+# calling it for the rest of the run and emit TRANSIENT_FAIL for its refs — this
+# bounds retry amplification against a systemic outage (AWS's "retries are selfish"
+# guard). The consecutive counter resets on any definitive answer; the total-retry
+# budget also bounds a half-working source that alternates fail/success.
+_BREAKER_CONSECUTIVE = 5
+_BREAKER_TOTAL_RETRIES = 8
+
+
+class _Outcome(str, Enum):
+    """Per-source resolution outcome, before cross-source aggregation."""
+
+    HIT = "hit"  # the source returned a matching canonical record
+    TERMINAL_MISS = "terminal_miss"  # authoritative "not here" (404 or parsed empty result)
+    TRANSIENT_FAIL = "transient_fail"  # transient failure after retries, or breaker-tripped
+
+
 class Resolver:
     """Resolve Reference records to canonical records via four scholarly APIs.
 
@@ -156,6 +175,12 @@ class Resolver:
         self._g_s2 = _MinIntervalGate(self._cfg.s2_min_interval)
         self._g_arxiv = _MinIntervalGate(self._cfg.arxiv_min_interval)
         self._g_openalex = _MinIntervalGate(self._cfg.openalex_min_interval)
+        # Retry + circuit-breaker state (per Resolver instance == per run).
+        self._policy = RetryPolicy()
+        self._consec_fail: dict[str, int] = {}
+        self._retry_budget: dict[str, int] = {}
+        self._tripped: set[str] = set()
+        self.recovered_after_retry = 0
 
     async def __aenter__(self) -> "Resolver":
         return self
@@ -166,10 +191,86 @@ class Resolver:
     async def aclose(self) -> None:
         await self.client.aclose()
 
+    # ----- internals -------------------------------------------------------
+
+    def _record_transient(self, source: str, retries: int) -> None:
+        self._consec_fail[source] = self._consec_fail.get(source, 0) + 1
+        self._retry_budget[source] = self._retry_budget.get(source, 0) + retries
+        if source not in self._tripped and (
+            self._consec_fail[source] >= _BREAKER_CONSECUTIVE
+            or self._retry_budget[source] >= _BREAKER_TOTAL_RETRIES
+        ):
+            self._tripped.add(source)
+            _log(self.verbose, f"circuit breaker tripped for {source}; skipping it for the rest of the run")
+
+    def _record_answer(self, source: str, retries: int) -> None:
+        # A definitive HTTP answer (success or terminal status) clears the
+        # consecutive-failure streak; if it needed retries, the retry layer recovered it.
+        self._consec_fail[source] = 0
+        if retries > 0:
+            self.recovered_after_retry += 1
+            self._retry_budget[source] = self._retry_budget.get(source, 0) + retries
+
+    async def _request(
+        self,
+        source: str,
+        gate: "_MinIntervalGate",
+        url: str,
+        *,
+        params: Optional[dict] = None,
+        headers: Optional[dict] = None,
+        timeout: Optional[float] = None,
+        parse: str = "json",
+    ):
+        """Gate + retry one GET, honoring the per-source circuit breaker.
+
+        Returns ``("ok", payload)`` (parsed JSON or raw text for a 2xx),
+        ``("terminal", status_code)`` for an authoritative non-2xx, or
+        ``("transient", None)`` when the source is breaker-tripped, every retry was
+        exhausted, or a 2xx body failed to parse.
+        """
+        if source in self._tripped:
+            return "transient", None
+        await gate.wait()
+        retried = [0]
+        try:
+            r = await get_with_retry(
+                self.client,
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout,
+                policy=self._policy,
+                on_retry=lambda: retried.__setitem__(0, retried[0] + 1),
+            )
+        except TransientExhausted as e:
+            self._record_transient(source, retried[0])
+            _log(self.verbose, f"{source}: transient failure not recovered ({e})")
+            return "transient", None
+        self._record_answer(source, retried[0])
+        if r.status_code == 200:
+            if parse == "json":
+                try:
+                    return "ok", r.json()
+                except Exception:
+                    # A 2xx we can't parse is a transient symptom (truncated body,
+                    # proxy error page), never an authoritative "not found".
+                    self._record_transient(source, 0)
+                    _log(self.verbose, f"{source}: 200 with unparseable body — treating as transient")
+                    return "transient", None
+            return "ok", r.text
+        return "terminal", r.status_code
+
     # ----- public ----------------------------------------------------------
 
-    async def resolve(self, ref: Reference) -> Optional[CanonicalRecord]:
-        """Resolve one reference; return the first source that yields a hit."""
+    async def resolve(self, ref: Reference) -> Resolution:
+        """Resolve one reference across the four sources.
+
+        RESOLVED with the record on the first hit; UNRESOLVED only when *every*
+        source gave an authoritative terminal miss (a true ghost); DEGRADED when at
+        least one source failed transiently after retries and none resolved
+        (couldn't verify — never reported as a ghost).
+        """
         doi = normalize_doi(ref.doi)
         arxiv_id = normalize_arxiv_id(ref.arxiv_id) or _guess_arxiv_id(ref)
         key = cache_key(
@@ -182,8 +283,9 @@ class Resolver:
         cached = self.cache.get_record(key)
         if cached is not None:
             _log(self.verbose, f"cache hit for {ref.ref_id} ({cached.source})")
-            return cached
+            return Resolution(status=ResolutionStatus.RESOLVED, record=cached)
 
+        any_transient = False
         for fn, label in [
             (lambda: self._crossref(ref, doi), "crossref"),
             (lambda: self._semanticscholar(ref, doi, arxiv_id), "semanticscholar"),
@@ -191,137 +293,156 @@ class Resolver:
             (lambda: self._openalex(ref, doi), "openalex"),
         ]:
             try:
-                rec = await fn()
+                outcome, rec = await fn()
             except Exception as e:
+                # An unexpected error in a source method is a transient symptom, not
+                # an authoritative "not here" — never let it manufacture a ghost.
                 _log(self.verbose, f"{ref.ref_id}: {label} errored: {e!r}")
+                any_transient = True
                 continue
-            if rec is not None:
-                # OpenAlex mirrors Retraction Watch's data via its `is_retracted`
-                # field. For hits from other sources, do a follow-up OpenAlex
-                # lookup (DOI required) so we always know whether the cited
-                # paper has been retracted. Cached with the record, so this
-                # extra call only runs the first time a reference is resolved.
+            if outcome == _Outcome.HIT and rec is not None:
+                # OpenAlex mirrors Retraction Watch via `is_retracted`. For hits from
+                # other sources, do a follow-up OpenAlex DOI lookup so retraction is
+                # known regardless of which source resolved. Cached with the record.
                 if not rec.is_retracted and rec.source != "openalex" and rec.doi:
                     try:
                         if await self._openalex_is_retracted(rec.doi):
                             rec.is_retracted = True
                     except Exception as e:
                         _log(self.verbose, f"{ref.ref_id}: retraction check failed: {e!r}")
-                self.cache.put_record(key, rec)
-                return rec
-        return None
+                self.cache.put_record(key, rec)  # cache only a RESOLVED record, never DEGRADED
+                return Resolution(status=ResolutionStatus.RESOLVED, record=rec)
+            if outcome == _Outcome.TRANSIENT_FAIL:
+                any_transient = True
+            # TERMINAL_MISS → try the next source
+        if any_transient:
+            return Resolution(status=ResolutionStatus.DEGRADED)
+        return Resolution(status=ResolutionStatus.UNRESOLVED)
 
     # ----- per-source ------------------------------------------------------
 
-    async def _crossref(self, ref: Reference, doi: Optional[str]) -> Optional[CanonicalRecord]:
+    async def _crossref(self, ref: Reference, doi: Optional[str]) -> tuple[_Outcome, Optional[CanonicalRecord]]:
+        transient = False
         if doi:
-            await self._g_crossref.wait()
-            url = f"https://api.crossref.org/works/{quote(doi, safe='')}"
-            params = {"mailto": self.polite_mailto} if self.polite_mailto else None
-            r = await self.client.get(url, params=params)
-            if r.status_code == 200:
-                msg = r.json().get("message")
+            tag, payload = await self._request(
+                "crossref",
+                self._g_crossref,
+                f"https://api.crossref.org/works/{quote(doi, safe='')}",
+                params={"mailto": self.polite_mailto} if self.polite_mailto else None,
+            )
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                msg = payload.get("message")
                 if msg:
-                    return _crossref_to_record(msg)
-            elif r.status_code != 404:
-                _log(self.verbose, f"crossref DOI {doi}: HTTP {r.status_code}")
+                    return _Outcome.HIT, _crossref_to_record(msg)
+            # terminal (404) → fall through to the title search
 
-        if not ref.title:
-            return None
-
-        await self._g_crossref.wait()
-        params = {
-            "query.bibliographic": ref.title,
-            "rows": "5",
-        }
-        if ref.authors:
-            params["query.author"] = ref.authors[0]
-        if self.polite_mailto:
-            params["mailto"] = self.polite_mailto
-        r = await self.client.get("https://api.crossref.org/works", params=params)
-        if r.status_code != 200:
-            return None
-        items = r.json().get("message", {}).get("items", [])
-        for item in items:
-            if _title_matches(ref.title, item.get("title", [])):
-                return _crossref_to_record(item)
-        return None
+        if ref.title:
+            params = {"query.bibliographic": ref.title, "rows": "5"}
+            if ref.authors:
+                params["query.author"] = ref.authors[0]
+            if self.polite_mailto:
+                params["mailto"] = self.polite_mailto
+            tag, payload = await self._request(
+                "crossref", self._g_crossref, "https://api.crossref.org/works", params=params
+            )
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                for item in payload.get("message", {}).get("items", []):
+                    if _title_matches(ref.title, item.get("title", [])):
+                        return _Outcome.HIT, _crossref_to_record(item)
+        return (_Outcome.TRANSIENT_FAIL if transient else _Outcome.TERMINAL_MISS), None
 
     async def _semanticscholar(
         self, ref: Reference, doi: Optional[str], arxiv_id: Optional[str]
-    ) -> Optional[CanonicalRecord]:
+    ) -> tuple[_Outcome, Optional[CanonicalRecord]]:
         headers = {}
         if self.s2_api_key:
             headers["x-api-key"] = self.s2_api_key
-
         fields = "title,authors,year,abstract,externalIds,openAccessPdf,venue"
+        transient = False
 
-        async def _by_id(ext_id: str) -> Optional[CanonicalRecord]:
-            await self._g_s2.wait()
-            url = f"https://api.semanticscholar.org/graph/v1/paper/{ext_id}"
-            r = await self.client.get(url, headers=headers, params={"fields": fields})
-            if r.status_code == 200:
-                return _s2_to_record(r.json())
-            return None
+        async def _by_id(ext_id: str):
+            tag, payload = await self._request(
+                "semanticscholar",
+                self._g_s2,
+                f"https://api.semanticscholar.org/graph/v1/paper/{ext_id}",
+                headers=headers,
+                params={"fields": fields},
+            )
+            return tag, (_s2_to_record(payload) if tag == "ok" else None)
 
-        if doi:
-            rec = await _by_id(f"DOI:{doi}")
-            if rec:
-                return rec
+        for ext_id in (f"DOI:{doi}" if doi else None, f"ARXIV:{arxiv_id}" if arxiv_id else None):
+            if not ext_id:
+                continue
+            tag, rec = await _by_id(ext_id)
+            if tag == "transient":
+                transient = True
+            elif rec is not None:
+                return _Outcome.HIT, rec
+
+        if ref.title:
+            tag, payload = await self._request(
+                "semanticscholar",
+                self._g_s2,
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                headers=headers,
+                params={"query": ref.title, "limit": "5", "fields": fields},
+            )
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                for item in payload.get("data", []):
+                    if _title_matches(ref.title, [item.get("title", "")]):
+                        return _Outcome.HIT, _s2_to_record(item)
+        return (_Outcome.TRANSIENT_FAIL if transient else _Outcome.TERMINAL_MISS), None
+
+    async def _arxiv(self, ref: Reference, arxiv_id: Optional[str]) -> tuple[_Outcome, Optional[CanonicalRecord]]:
+        transient = False
         if arxiv_id:
-            rec = await _by_id(f"ARXIV:{arxiv_id}")
-            if rec:
-                return rec
-
-        if not ref.title:
-            return None
-
-        await self._g_s2.wait()
-        r = await self.client.get(
-            "https://api.semanticscholar.org/graph/v1/paper/search",
-            headers=headers,
-            params={"query": ref.title, "limit": "5", "fields": fields},
-        )
-        if r.status_code != 200:
-            return None
-        for item in r.json().get("data", []):
-            if _title_matches(ref.title, [item.get("title", "")]):
-                return _s2_to_record(item)
-        return None
-
-    async def _arxiv(self, ref: Reference, arxiv_id: Optional[str]) -> Optional[CanonicalRecord]:
-        if arxiv_id:
-            await self._g_arxiv.wait()
-            r = await self.client.get(
+            tag, payload = await self._request(
+                "arxiv",
+                self._g_arxiv,
                 "http://export.arxiv.org/api/query",
                 params={"id_list": arxiv_id, "max_results": "1"},
+                parse="text",
             )
-            if r.status_code == 200:
-                rec = _arxiv_to_record(r.text)
-                if rec:
-                    return rec
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                if not _xml_well_formed(payload):
+                    transient = True  # 200 but corrupt XML — transient, not "not found"
+                else:
+                    rec = _arxiv_to_record(payload)
+                    if rec:
+                        return _Outcome.HIT, rec
 
-        if not ref.title:
-            return None
-
-        # Title + first-author search.
-        q = f'ti:"{ref.title}"'
-        if ref.authors:
-            au = ref.authors[0].split()[-1]  # last name only
-            q = f"{q}+AND+au:{au}"
-        await self._g_arxiv.wait()
-        r = await self.client.get(
-            "http://export.arxiv.org/api/query",
-            params={"search_query": q, "max_results": "5"},
-        )
-        if r.status_code != 200:
-            return None
-        # Walk entries; pick the first whose title fuzzily matches.
-        for entry_xml in _split_arxiv_entries(r.text):
-            cand = _arxiv_to_record(entry_xml)
-            if cand and _title_matches(ref.title, [cand.title]):
-                return cand
-        return None
+        if ref.title:
+            # Title + first-author search.
+            q = f'ti:"{ref.title}"'
+            if ref.authors:
+                au = ref.authors[0].split()[-1]  # last name only
+                q = f"{q}+AND+au:{au}"
+            tag, payload = await self._request(
+                "arxiv",
+                self._g_arxiv,
+                "http://export.arxiv.org/api/query",
+                params={"search_query": q, "max_results": "5"},
+                parse="text",
+            )
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                if not _xml_well_formed(payload):
+                    transient = True
+                else:
+                    for entry_xml in _split_arxiv_entries(payload):
+                        cand = _arxiv_to_record(entry_xml)
+                        if cand and _title_matches(ref.title, [cand.title]):
+                            return _Outcome.HIT, cand
+        return (_Outcome.TRANSIENT_FAIL if transient else _Outcome.TERMINAL_MISS), None
 
     async def _openalex_is_retracted(self, doi: str) -> bool:
         """Lightweight retraction-only OpenAlex check by DOI.
@@ -341,32 +462,39 @@ class Resolver:
             return False
         return bool(r.json().get("is_retracted"))
 
-    async def _openalex(self, ref: Reference, doi: Optional[str]) -> Optional[CanonicalRecord]:
-        params = {}
+    async def _openalex(self, ref: Reference, doi: Optional[str]) -> tuple[_Outcome, Optional[CanonicalRecord]]:
+        params: dict = {}
         if self.polite_mailto:
             params["mailto"] = self.polite_mailto
+        transient = False
 
         if doi:
-            await self._g_openalex.wait()
-            url = f"https://api.openalex.org/works/doi:{quote(doi, safe='')}"
-            r = await self.client.get(url, params=params)
-            if r.status_code == 200:
-                return _openalex_to_record(r.json())
-            elif r.status_code != 404:
-                _log(self.verbose, f"openalex DOI {doi}: HTTP {r.status_code}")
+            tag, payload = await self._request(
+                "openalex",
+                self._g_openalex,
+                f"https://api.openalex.org/works/doi:{quote(doi, safe='')}",
+                params=params or None,
+            )
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                return _Outcome.HIT, _openalex_to_record(payload)
+            # terminal (404) → fall through to the search
 
-        if not ref.title:
-            return None
-
-        await self._g_openalex.wait()
-        params2 = {"search": ref.title, "per-page": "5", **params}
-        r = await self.client.get("https://api.openalex.org/works", params=params2)
-        if r.status_code != 200:
-            return None
-        for item in r.json().get("results", []):
-            if _title_matches(ref.title, [item.get("title", "")]):
-                return _openalex_to_record(item)
-        return None
+        if ref.title:
+            tag, payload = await self._request(
+                "openalex",
+                self._g_openalex,
+                "https://api.openalex.org/works",
+                params={"search": ref.title, "per-page": "5", **params},
+            )
+            if tag == "transient":
+                transient = True
+            elif tag == "ok":
+                for item in payload.get("results", []):
+                    if _title_matches(ref.title, [item.get("title", "")]):
+                        return _Outcome.HIT, _openalex_to_record(item)
+        return (_Outcome.TRANSIENT_FAIL if transient else _Outcome.TERMINAL_MISS), None
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +508,7 @@ async def resolve_reference(
     s2_api_key: Optional[str] = None,
     polite_mailto: Optional[str] = None,
     verbose: bool = False,
-) -> Optional[CanonicalRecord]:
+) -> Resolution:
     async with Resolver(
         cache=cache,
         s2_api_key=s2_api_key,
@@ -509,6 +637,16 @@ def _arxiv_to_record(xml_text: str) -> Optional[CanonicalRecord]:
         abstract=summary or None,
         open_access_pdf_url=pdf_url,
     )
+
+
+def _xml_well_formed(text: str) -> bool:
+    """True if ``text`` parses as XML. Distinguishes a corrupt 200 body (transient)
+    from a genuinely empty arXiv feed (terminal not-found)."""
+    try:
+        ET.fromstring(text)
+        return True
+    except ET.ParseError:
+        return False
 
 
 def _split_arxiv_entries(feed_xml: str) -> list[str]:

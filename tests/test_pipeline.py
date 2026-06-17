@@ -19,6 +19,8 @@ from prereview.models import (
     Citation,
     IngestedPaper,
     Reference,
+    Resolution,
+    ResolutionStatus,
     ReviewBundle,
     VerificationResult,
     Verdict,
@@ -88,8 +90,11 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
 
         async def resolve(self, ref: Reference):
             if ref.ref_id == "3":
-                return None
-            return _canonical(ref.ref_id, source="crossref")
+                return Resolution(status=ResolutionStatus.UNRESOLVED)
+            return Resolution(
+                status=ResolutionStatus.RESOLVED,
+                record=_canonical(ref.ref_id, source="crossref"),
+            )
 
     class FakeVerifier:
         def __init__(self, **kw):
@@ -201,7 +206,7 @@ async def test_pipeline_backs_up_existing_review(tmp_path: Path, monkeypatch, fa
             return None
 
         async def resolve(self, ref):
-            return None
+            return Resolution(status=ResolutionStatus.UNRESOLVED)
 
         async def verify(self, *a, **kw):
             raise AssertionError("verify should not be called for empty paper")
