@@ -146,6 +146,52 @@ yes
     assert items[0].response == "yes"
 
 
+def test_no_gate_subblock_does_not_latch_onto_sibling_itemize():
+    """Regression: a gate whose sub-items were deleted (answered 'no') must not
+    bind to a later unrelated itemize in the same section — that produced a
+    spurious gate_inconsistency and could swallow a real unanswered finding."""
+    src = r"""
+\checksubsection{Computational Experiments}
+\begin{itemize}
+\question{Does this paper include computational experiments?}{(yes/no)}
+no
+\end{itemize}
+
+\begin{itemize}
+\question{This paper lists all final hyper-parameters}{(yes/partial/no/NA)}
+yes
+\end{itemize}
+"""
+    items = parse_checklist(src)
+    # The second question is a sibling, not a sub-item of the gate.
+    sibling = next(it for it in items if "hyper-parameters" in it.question)
+    assert sibling.gate_question is None
+    # No spurious gate inconsistency, and the answered sibling is not flagged.
+    assert check_self_consistency(items) == []
+
+
+def test_deleted_subblock_does_not_hide_unanswered_sibling():
+    """The flip side: a blank sibling after a 'no' gate must still be flagged
+    unanswered (it is not a cascaded sub-item)."""
+    src = r"""
+\checksubsection{Computational Experiments}
+\begin{itemize}
+\question{Does this paper include computational experiments?}{(yes/no)}
+no
+\end{itemize}
+
+\begin{itemize}
+\question{This paper lists all final hyper-parameters}{(yes/partial/no/NA)}
+Type your response here
+\end{itemize}
+"""
+    items = parse_checklist(src)
+    findings = check_self_consistency(items)
+    unanswered = [f for f in findings if f.kind == ChecklistFindingKind.UNANSWERED]
+    assert len(unanswered) == 1
+    assert "hyper-parameters" in unanswered[0].question
+
+
 def test_empty_and_garbage_return_empty_list():
     assert parse_checklist("") == []
     assert parse_checklist("random text with no checklist macros at all") == []
@@ -173,6 +219,15 @@ def test_find_checklist_via_input_resolves_relative(tmp_path: Path):
     chk.write_text("x")
     tex = tmp_path / "paper.tex"
     tex.write_text(r"\input{sections/repro_checklist}")
+    assert find_checklist_file(tex, tex.read_text()) == chk
+
+
+def test_find_checklist_via_input_dotted_basename(tmp_path: Path):
+    """A dotted basename must get .tex appended, not its 'extension' replaced."""
+    chk = tmp_path / "repro.checklist.tex"
+    chk.write_text("x")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(r"\input{repro.checklist}")
     assert find_checklist_file(tex, tex.read_text()) == chk
 
 
@@ -214,6 +269,17 @@ def test_invalid_response_quotes_allowed_options():
     assert len(findings) == 1
     assert findings[0].kind == ChecklistFindingKind.INVALID_RESPONSE
     assert "yes" in findings[0].detail and "no" in findings[0].detail
+
+
+def test_na_response_accepted():
+    items = [_item("Q", ["yes", "no", "na"], "N/A")]
+    assert check_self_consistency(items) == []
+
+
+def test_multi_token_short_response_uses_leading_option():
+    """'no x' must read as the leading option 'no' (valid), not 'nox' (invalid)."""
+    items = [_item("Q", ["yes", "no"], "no x")]
+    assert check_self_consistency(items) == []
 
 
 def test_gate_no_with_answered_subitem_flags_inconsistency():

@@ -107,7 +107,9 @@ def find_checklist_file(
             continue
         cand = tex_path.parent / target
         if cand.suffix.lower() != ".tex":
-            cand = cand.with_suffix(".tex")
+            # Append rather than replace: \input{my.checklist} -> my.checklist.tex,
+            # not my.tex.
+            cand = cand.with_name(cand.name + ".tex")
         if cand.exists():
             return cand
 
@@ -200,8 +202,11 @@ def parse_checklist(text: str) -> list[ChecklistItem]:
                     gate_question=active_gate if in_block else None,
                 )
             )
-            if is_gate:
-                pending_gate = question
+            # A gate owns only a sub-block that opens immediately after it; any
+            # other question ends the wait, so a stale gate can't latch onto a
+            # later unrelated itemize (e.g. when a "no" gate's sub-items were
+            # deleted but a sibling itemize remains in the section).
+            pending_gate = question if is_gate else None
             i = j
 
         elif tok.startswith("\\ifyespoints"):
@@ -218,6 +223,9 @@ def parse_checklist(text: str) -> list[ChecklistItem]:
                 pending_gate = None
 
         else:  # \end{itemize}
+            # A closing itemize before the gate's sub-block opened means the gate
+            # had no sub-block — drop the pending gate so it can't bind later.
+            pending_gate = None
             if active_gate is not None and active_gate_depth is not None and depth <= active_gate_depth:
                 active_gate = active_gate_depth = None
             depth = max(0, depth - 1)
@@ -250,11 +258,11 @@ def _answer_token(response: str) -> Optional[str]:
     if not words:
         return None
     first = words[0]
-    compact = "".join(words)
-    # "n/a" tokenizes to ["n", "a"]; accept the compacted form when it is short
-    # enough to be an option word rather than a sentence.
-    if len(compact) <= 3:
-        return compact
+    # "n/a" tokenizes to ["n", "a"]; rejoin only that all-single-letter shape so
+    # it reads as "na". A multi-token answer like "no x" keeps its leading token
+    # ("no") rather than being mangled into "nox".
+    if all(len(w) == 1 for w in words) and len("".join(words)) <= 3:
+        return "".join(words)
     return first
 
 
