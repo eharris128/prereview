@@ -74,6 +74,7 @@ def _verdict_label(v: Verdict) -> str:
         Verdict.ABSTRACT_TOO_THIN: "Abstract too thin to tell",
         Verdict.TARGET_UNAVAILABLE: "Unresolved (potential ghost reference)",
         Verdict.METADATA_MISMATCH: "Metadata mismatch (likely wrong DOI or misattributed entry)",
+        Verdict.VERIFICATION_UNAVAILABLE: "Could not verify (infrastructure — re-run)",
     }[v]
 
 
@@ -85,6 +86,7 @@ _SEVERITY: dict[Verdict, int] = {
     Verdict.DOES_NOT_SUPPORT: 2,
     Verdict.PARTIALLY_SUPPORTS: 3,
     Verdict.ABSTRACT_TOO_THIN: 4,
+    Verdict.VERIFICATION_UNAVAILABLE: 4,  # not a paper problem; never enters a flagged group
     Verdict.SUPPORTS: 5,
 }
 
@@ -458,8 +460,70 @@ def _checklist_methodology_sentence(bundle: ReviewBundle) -> str:
     )
 
 
+def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
+    """Coverage & reliability — the trust signal. Renders only when there is an
+    infrastructure outcome to disclose (degradation, recovery, a tripped source, or a
+    failed prose pass); a clean run leaves it out (the methodology section carries the
+    normal stats). Deterministic, like ``render_hygiene_section``.
+    """
+    verifs = bundle.verifications
+    total = len(verifs)
+    ghost = sum(1 for v in verifs if v.verdict == Verdict.TARGET_UNAVAILABLE)
+    degraded = [v for v in verifs if v.verdict == Verdict.VERIFICATION_UNAVAILABLE]
+    cov = bundle.coverage
+    recovered = cov.recovered_after_retry if cov else 0
+    broken = list(cov.circuit_broken_sources) if cov else []
+    synth_degraded = bool(cov.synthesis_degraded) if cov else False
+
+    if not degraded and recovered == 0 and not broken and not synth_degraded:
+        return None  # nothing infrastructure-related to disclose
+
+    resolved = total - ghost - len(degraded)
+    lines = ["## Review coverage & reliability", ""]
+    if degraded or broken or synth_degraded:
+        lines.append(
+            "_Some parts of this review could not be completed due to infrastructure "
+            "issues. The items below are **not** findings about your paper — re-running "
+            "may clear them._"
+        )
+    else:
+        lines.append(
+            "_This run hit transient API failures and recovered them; coverage is complete._"
+        )
+    lines.append("")
+    lines.append(
+        f"- {resolved} of {total} citation{'' if total == 1 else 's'} resolved and verified; "
+        f"{ghost} genuinely unresolved (shown under Citation issues)."
+    )
+    if recovered:
+        lines.append(
+            f"- {recovered} transient API failure{'' if recovered == 1 else 's'} recovered on "
+            "retry (would otherwise have been reported as unresolved)."
+        )
+    if degraded:
+        ids = ", ".join(f"`{v.ref_id}`" for v in degraded)
+        lines.append(
+            f"- **{len(degraded)} citation{'' if len(degraded) == 1 else 's'} could not be "
+            "verified** — a scholarly API or the model failed after retries. These are NOT "
+            f"ghost citations; re-run to confirm: {ids}."
+        )
+    if broken:
+        srcs = ", ".join(f"`{s}`" for s in broken)
+        lines.append(
+            f"- Stopped querying after repeated failures this run: {srcs}. Set the relevant "
+            "API key (`S2_API_KEY` / `OPENALEX_API_KEY`) and re-run for fuller coverage."
+        )
+    if synth_degraded:
+        lines.append(
+            "- The narrative sections (summary, strengths, weaknesses, questions, rating) "
+            "could not be generated this run; the deterministic sections are complete."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def render_methodology(bundle: ReviewBundle) -> str:
     total = len(bundle.verifications)
+    ghost = sum(1 for v in bundle.verifications if v.verdict == Verdict.TARGET_UNAVAILABLE)
     flagged = sum(1 for v in bundle.verifications if _is_problematic(v))
     n_broken = len(bundle.paper.broken_refs)
     n_unused = len(bundle.paper.unused_bibkeys)
@@ -489,7 +553,7 @@ def render_methodology(bundle: ReviewBundle) -> str:
     This review was produced by `prereview`, an AI-assisted pre-submission tool. The retrieval
     and extraction passes used `{bundle.model}`; the synthesis pass used `{bundle.synthesis_model}`.
 
-    Of {total} in-text citations, {bundle.unresolved_count} bibliography entr{"y" if bundle.unresolved_count == 1 else "ies"} did not
+    Of {total} in-text citations, {ghost} bibliography entr{"y" if ghost == 1 else "ies"} did not
     resolve to any record in Crossref, Semantic Scholar, arXiv, or OpenAlex. Of the citations
     that did resolve, {bundle.fetched_full_text_count} were verified against the cited paper's full text and
     {bundle.abstract_only_count} were verified against the abstract only. {flagged} citation{"" if flagged == 1 else "s"} {"was" if flagged == 1 else "were"} flagged
@@ -570,7 +634,7 @@ PAPER BODY:
 
 CITATION VERIFICATION SUMMARY:
 - Total in-text citations checked: {len(bundle.verifications)}
-- Unresolved bibliography entries (potential ghost references): {bundle.unresolved_count}
+- Unresolved bibliography entries (potential ghost references): {sum(1 for v in bundle.verifications if v.verdict == Verdict.TARGET_UNAVAILABLE)}
 - Verified against full text: {bundle.fetched_full_text_count}
 - Verified against abstract only: {bundle.abstract_only_count}
 - Flagged citations:
@@ -655,8 +719,11 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
 
     head = f"# Pre-submission review\n\n**Paper:** {paper.title or '(title not extracted)'}\n"
 
-    sections = [
-        head,
+    sections = [head]
+    coverage = render_coverage_section(bundle)
+    if coverage is not None:
+        sections.append(coverage.strip())
+    sections += [
         "## Summary",
         summary,
         "## Strengths",
@@ -690,5 +757,14 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
 
 async def synthesize_review(bundle: ReviewBundle, *, verbose: bool = False) -> str:
     _log(verbose, f"prose pass via {bundle.synthesis_model}")
-    prose = await _generate_prose(bundle, verbose=verbose)
+    try:
+        prose = await _generate_prose(bundle, verbose=verbose)
+    except Exception as e:
+        # The prose pass is the only LLM step here. If it fails (after retries), keep the
+        # deterministic sections — citation issues, hygiene, checklist, coverage,
+        # methodology — rather than losing the whole review, and disclose the gap.
+        _log(verbose, f"prose pass failed: {e!r}; writing deterministic sections only")
+        if bundle.coverage is not None:
+            bundle.coverage.synthesis_degraded = True
+        prose = {}
     return stitch_review(prose, bundle)

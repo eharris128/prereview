@@ -16,6 +16,7 @@ from prereview.models import (
     ChecklistFindingKind,
     Citation,
     CitationRole,
+    CoverageReport,
     IngestedPaper,
     LinkCheck,
     Reference,
@@ -646,3 +647,71 @@ async def test_synthesize_review_full_pass(monkeypatch):
 
     # Methodology lists what the tool does NOT do.
     assert "Missing prior work" in md
+
+
+# ---------------------------------------------------------------------------
+# coverage & reliability section + graceful degradation (U7)
+
+
+def test_coverage_section_none_when_all_resolved():
+    """A clean run with nothing to disclose omits the coverage section entirely."""
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1"), _v(Verdict.SUPPORTS, ref_id="2")])
+    assert syn.render_coverage_section(bundle) is None
+
+
+def test_coverage_section_reports_degraded_and_keeps_it_out_of_citation_issues():
+    """A VERIFICATION_UNAVAILABLE citation surfaces in the coverage section (named, framed
+    as 'could not verify') and must NOT appear in Citation issues — it's a tool problem,
+    not a paper defect."""
+    verifs = [
+        _v(Verdict.SUPPORTS, ref_id="1"),
+        _v(Verdict.VERIFICATION_UNAVAILABLE, ref_id="2", canonical=False, rationale="API failed."),
+    ]
+    bundle = _make_bundle(verifs)
+    cov = syn.render_coverage_section(bundle)
+    assert cov is not None
+    assert "could not be" in cov and "verified" in cov
+    assert "`2`" in cov  # the degraded ref_id is named so the user can re-check it
+    issues = syn.render_citation_issues(bundle)
+    assert "`2`" not in issues  # excluded from paper-level findings
+
+
+def test_coverage_section_reports_recovered_and_breaker():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport(
+        recovered_after_retry=3, circuit_broken_sources=["semanticscholar"]
+    )
+    cov = syn.render_coverage_section(bundle)
+    assert cov is not None
+    assert "recovered on" in cov
+    assert "semanticscholar" in cov
+
+
+def test_methodology_counts_true_ghosts_not_degraded():
+    """The unresolved count in the methodology section must reflect true ghosts only —
+    an infrastructure-degraded citation is not a ghost."""
+    verifs = [
+        _v(Verdict.TARGET_UNAVAILABLE, ref_id="1", canonical=False),
+        _v(Verdict.VERIFICATION_UNAVAILABLE, ref_id="2", canonical=False),
+    ]
+    bundle = _make_bundle(verifs)
+    meth = syn.render_methodology(bundle)
+    assert "1 bibliography entry did not" in meth  # 1 true ghost, not 2
+
+
+@pytest.mark.asyncio
+async def test_synthesize_review_survives_prose_failure(monkeypatch):
+    """If the prose (LLM) pass fails, the deterministic sections still render and the
+    coverage section discloses the gap — the review is never lost to an LLM blip."""
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport()
+
+    async def boom(bundle, *, verbose=False):
+        raise RuntimeError("opus down")
+
+    monkeypatch.setattr(syn, "_generate_prose", boom)
+    md = await syn.synthesize_review(bundle)
+    assert "# Pre-submission review" in md
+    assert "Methodology and limits" in md  # deterministic section survived
+    assert bundle.coverage.synthesis_degraded is True
+    assert "could not be generated" in md  # coverage section discloses the prose failure
