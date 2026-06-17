@@ -100,6 +100,55 @@ class LinkCheck(BaseModel):
     error: Optional[str] = None  # short failure description, or None on success
 
 
+class ChecklistFindingKind(str, Enum):
+    """What kind of reproducibility-checklist issue a finding represents.
+
+    The first three are tier-1 (self-consistency, need only the checklist file);
+    ``CLAIM_UNSUPPORTED`` is tier-2 (the checklist answer claims something the
+    paper body does not appear to support).
+    """
+
+    UNANSWERED = "unanswered"  # left as "Type your response here" or blank
+    INVALID_RESPONSE = "invalid_response"  # response not in the item's option set
+    GATE_INCONSISTENCY = "gate_inconsistency"  # gate answer contradicts its sub-items
+    CLAIM_UNSUPPORTED = "claim_unsupported"  # "yes" with no supporting evidence in the paper
+
+
+class ChecklistItem(BaseModel):
+    """One parsed ``\\question`` from a venue reproducibility checklist.
+
+    Parsed structurally (not by hard-coded question strings) so the same parser
+    works across AAAI years and, later, other venues. ``is_gate`` marks the
+    "Does this paper ...?" yes/no questions that gate a nested sub-block; the
+    sub-items of that block carry the gate's text in ``gate_question`` so tier-1
+    can check gate-vs-subitem consistency.
+    """
+
+    section: Optional[str] = None  # the \checksubsection this item lives under
+    question: str
+    options: list[str] = Field(default_factory=list)  # lowercased, e.g. ["yes", "partial", "no", "na"]
+    response: str = ""  # the author's answer, e.g. "yes", "", or "Type your response here"
+    is_gate: bool = False  # a "Does this paper ...?" (yes/no) question gating a sub-block
+    gate_question: Optional[str] = None  # parent gate's text for a sub-item, else None
+
+
+class ChecklistFinding(BaseModel):
+    """A single reproducibility-checklist issue surfaced to the author.
+
+    Mirrors :class:`BrokenRef`/:class:`LinkCheck`: a deterministic, source-level
+    finding rendered in its own review section. Every finding quotes the offending
+    ``question`` so the author can locate it; ``detail`` carries the
+    human-readable specifics (the allowed options for an invalid response, or the
+    evidence that was sought for a tier-2 ``claim_unsupported``).
+    """
+
+    kind: ChecklistFindingKind
+    section: Optional[str] = None
+    question: str
+    response: str = ""
+    detail: str = ""  # allowed options (invalid_response) or evidence sought (claim_unsupported)
+
+
 class IngestedPaper(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
@@ -109,6 +158,11 @@ class IngestedPaper(BaseModel):
     unused_bibkeys: list[str] = Field(default_factory=list)
     broken_refs: list[BrokenRef] = Field(default_factory=list)
     link_checks: list[LinkCheck] = Field(default_factory=list)
+    # Reproducibility-checklist linter output (TeX-only; the PDF path never sets
+    # these, so they default to "no checklist seen"). ``checklist_found``
+    # distinguishes "no checklist" from "checklist clean" for the renderer.
+    checklist_found: bool = False
+    checklist_findings: list[ChecklistFinding] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):
