@@ -408,11 +408,12 @@ def _has_dataset_evidence(body: str, links: list[LinkCheck]) -> bool:
 # small and high-precision — a check that cannot be made precise is left out
 # rather than shipped noisy.
 _Detector = Callable[[str, list[LinkCheck]], bool]
+# ``evidence`` reads after "no ... found in the paper", so no leading article.
 CROSS_CHECKS: list[tuple[list[str], list[str], str, _Detector]] = [
-    (["source code", "publicly available"], [], "a public repository URL (e.g. github.com / zenodo.org)", _has_repo_url),
+    (["source code", "publicly available"], [], "public repository URL (e.g. github.com / zenodo.org)", _has_repo_url),
     (["computing infrastructure"], [], "hardware details (GPU/CPU/TPU model, memory)", _has_hardware),
-    (["number of algorithm runs"], [], "the number of runs / random seeds", _has_runs),
-    (["datasets", "publicly available"], ["not publicly available"], "a dataset URL or a recognizable public-dataset name", _has_dataset_evidence),
+    (["number of algorithm runs"], [], "statement of the number of runs / random seeds used", _has_runs),
+    (["datasets", "publicly available"], ["not publicly available"], "dataset URL or recognizable public-dataset name", _has_dataset_evidence),
 ]
 
 
