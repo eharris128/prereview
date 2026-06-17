@@ -335,6 +335,18 @@ def test_question_with_no_mapping_is_ignored():
     assert check_claims_vs_paper(items, "No evidence of anything.", []) == []
 
 
+def test_non_public_dataset_question_is_not_cross_checked():
+    """Precision guard: the AAAI item about datasets that are *not* publicly
+    available makes no availability claim — answering 'yes' (we described them)
+    must not be flagged for a missing dataset URL."""
+    q = (
+        "All datasets that are not publicly available are described in detail, "
+        "with explanation why publicly available alternatives are not scientifically satisficing"
+    )
+    items = [_item(q, ["yes", "partial", "no", "na"], "yes")]
+    assert check_claims_vs_paper(items, "We use a private corpus.", []) == []
+
+
 def test_cross_checks_table_is_small_and_high_precision():
     # Guard against the table quietly growing into low-precision territory.
     assert len(CROSS_CHECKS) == 4

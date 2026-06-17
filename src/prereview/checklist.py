@@ -399,17 +399,20 @@ def _has_dataset_evidence(body: str, links: list[LinkCheck]) -> bool:
     return any(name in hay for name in _DATASET_NAMES)
 
 
-# Each cross-check: every substring in ``match`` must appear (lowercased) in the
-# question, ``detector(body, links)`` returns True when supporting evidence is
-# present, and ``evidence`` names what was sought (for the advisory finding).
-# Deliberately small and high-precision — a check that cannot be made precise is
-# left out rather than shipped noisy.
+# Each cross-check fires on a question when every substring in ``needles`` is
+# present (lowercased) and no substring in ``excludes`` is — ``excludes`` keeps a
+# broad needle from catching an inverted variant (e.g. the "datasets that are
+# *not* publicly available" item, which makes no availability claim to verify).
+# ``detector(body, links)`` returns True when supporting evidence is present, and
+# ``evidence`` names what was sought (for the advisory finding). Deliberately
+# small and high-precision — a check that cannot be made precise is left out
+# rather than shipped noisy.
 _Detector = Callable[[str, list[LinkCheck]], bool]
-CROSS_CHECKS: list[tuple[list[str], str, _Detector]] = [
-    (["source code", "publicly available"], "a public repository URL (e.g. github.com / zenodo.org)", _has_repo_url),
-    (["computing infrastructure"], "hardware details (GPU/CPU/TPU model, memory)", _has_hardware),
-    (["number of algorithm runs"], "the number of runs / random seeds", _has_runs),
-    (["datasets", "publicly available"], "a dataset URL or a recognizable public-dataset name", _has_dataset_evidence),
+CROSS_CHECKS: list[tuple[list[str], list[str], str, _Detector]] = [
+    (["source code", "publicly available"], [], "a public repository URL (e.g. github.com / zenodo.org)", _has_repo_url),
+    (["computing infrastructure"], [], "hardware details (GPU/CPU/TPU model, memory)", _has_hardware),
+    (["number of algorithm runs"], [], "the number of runs / random seeds", _has_runs),
+    (["datasets", "publicly available"], ["not publicly available"], "a dataset URL or a recognizable public-dataset name", _has_dataset_evidence),
 ]
 
 
@@ -430,8 +433,10 @@ def check_claims_vs_paper(
         if _answer_token(it.response) not in ("yes", "partial"):
             continue
         q = it.question.lower()
-        for needles, evidence, detector in CROSS_CHECKS:
+        for needles, excludes, evidence, detector in CROSS_CHECKS:
             if not all(needle in q for needle in needles):
+                continue
+            if any(bad in q for bad in excludes):
                 continue
             if detector(body_text, link_checks):
                 continue
