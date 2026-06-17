@@ -18,6 +18,17 @@ from typing import Any, Optional
 # first 400 so we don't spend a retry on every call.
 _NO_TEMPERATURE_MODELS: set[str] = set()
 
+# Retry knobs for prereview's own direct LLM calls. litellm defaults to NO retries,
+# so a transient 429/5xx/timeout fails immediately without this. litellm performs
+# library-managed retry-with-backoff and reraises the original exception on
+# exhaustion; callers (verify/synthesize) map that to a degraded outcome rather than
+# crashing or faking an abstention. Tunable in one place.
+_LLM_NUM_RETRIES = 4
+_LLM_TIMEOUT_S = 120.0  # litellm's own default is 600s — too long for an interactive CLI
+# A malformed/partial JSON response often succeeds on a fresh call; re-attempt once
+# before surfacing the parse failure to the caller's boundary.
+_JSON_REATTEMPT = True
+
 
 def _model_takes_temperature(model: str) -> bool:
     if model in _NO_TEMPERATURE_MODELS:
@@ -51,7 +62,13 @@ async def acompletion_text(
             flush=True,
         )
 
-    kwargs: dict = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "num_retries": _LLM_NUM_RETRIES,
+        "timeout": _LLM_TIMEOUT_S,
+    }
     if _model_takes_temperature(model):
         kwargs["temperature"] = temperature
 
@@ -91,15 +108,28 @@ async def acompletion_json(
     or surrounding prose. Raises ValueError on parse failure.
     """
     sys_prompt = system or "Respond with a single valid JSON value. No prose, no fences."
-    text = await acompletion_text(
-        model=model,
-        user=user,
-        system=sys_prompt,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        verbose=verbose,
-    )
-    return parse_json_loose(text)
+    attempts = 2 if _JSON_REATTEMPT else 1
+    last_exc: Optional[ValueError] = None
+    for i in range(attempts):
+        text = await acompletion_text(
+            model=model,
+            user=user,
+            system=sys_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            verbose=verbose,
+        )
+        try:
+            return parse_json_loose(text)
+        except ValueError as e:
+            last_exc = e
+            if verbose:
+                print(
+                    f"[llm] JSON parse failed (attempt {i + 1}/{attempts})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    raise last_exc  # type: ignore[misc]
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
