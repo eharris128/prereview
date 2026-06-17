@@ -106,7 +106,8 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
         async def __aexit__(self, *exc):
             return None
 
-        async def verify(self, cit, ref, canonical, *, model, fetch_cited, verbose):
+        async def verify(self, cit, ref, resolution, *, model, fetch_cited, verbose):
+            canonical = resolution.record
             if canonical is None:
                 return VerificationResult(
                     ref_id=ref.ref_id,

@@ -21,6 +21,8 @@ from prereview.models import (
     Citation,
     CitationRole,
     Reference,
+    Resolution,
+    ResolutionStatus,
     Verdict,
 )
 from prereview.verify import Verifier
@@ -50,6 +52,13 @@ def _canonical(*, abstract=None, pdf_url=None) -> CanonicalRecord:
     )
 
 
+def _res(record=None) -> Resolution:
+    """Wrap a canonical record (or None) as a Resolution for verify()."""
+    if record is not None:
+        return Resolution(status=ResolutionStatus.RESOLVED, record=record)
+    return Resolution(status=ResolutionStatus.UNRESOLVED)
+
+
 def _cite(ref_id: str = "1", sentence: str = "Toys are nice [1].") -> Citation:
     return Citation(ref_id=ref_id, sentence=sentence)
 
@@ -62,7 +71,7 @@ def cache(tmp_path: Path) -> Cache:
 @pytest.mark.asyncio
 async def test_target_unavailable_when_canonical_none(cache):
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), None, model="x")
+        r = await v.verify(_cite(), _ref("1"), _res(), model="x")
     assert r.verdict == Verdict.TARGET_UNAVAILABLE
     assert r.canonical is None
 
@@ -86,7 +95,7 @@ async def test_no_evidence_method_attribution_supports_from_metadata(cache, monk
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.SUPPORTS
     assert r.role == CitationRole.METHOD_ATTRIBUTION
     assert r.abstract_only is True
@@ -110,7 +119,7 @@ async def test_no_evidence_claim_support_returns_abstract_too_thin(cache, monkey
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.ABSTRACT_TOO_THIN
     assert r.role == CitationRole.CLAIM_SUPPORT
     assert r.abstract_only is True
@@ -127,7 +136,7 @@ async def test_abstract_only_verdict_pass_through(cache, monkeypatch):
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="anthropic/claude-sonnet-4-6", fetch_cited=False)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="anthropic/claude-sonnet-4-6", fetch_cited=False)
     assert r.verdict == Verdict.SUPPORTS
     assert r.abstract_only is True
     assert "Toys are pleasant" in captured["user"]
@@ -152,7 +161,7 @@ async def test_full_text_path_marks_not_abstract_only(cache, monkeypatch):
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
 
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=True)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=True)
     assert r.verdict == Verdict.PARTIALLY_SUPPORTS
     assert r.abstract_only is False
 
@@ -175,7 +184,7 @@ async def test_no_fetch_cited_skips_pdf_path(cache, monkeypatch):
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
 
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert fetched is False
     assert r.abstract_only is True
 
@@ -208,7 +217,7 @@ async def test_metadata_mismatch_real_world_guo2023pypi_case(cache, monkeypatch)
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), ref, can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), ref, _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.METADATA_MISMATCH
     assert "author-surname overlap" in r.rationale
     assert called is False
@@ -240,7 +249,7 @@ async def test_metadata_mismatch_does_not_trigger_on_truncated_title(cache, monk
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), ref, can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), ref, _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.SUPPORTS  # not METADATA_MISMATCH
 
 
@@ -267,7 +276,7 @@ async def test_metadata_mismatch_when_authors_disagree(cache, monkeypatch):
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), ref, can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), ref, _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.METADATA_MISMATCH
     assert "author-surname overlap" in r.rationale or "No author" in r.rationale
 
@@ -284,8 +293,8 @@ async def test_verify_cache_hit_skips_llm(cache, monkeypatch):
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r1 = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
-        r2 = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        r1 = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
+        r2 = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert calls == 1  # second call hit the cache
     assert r1.verdict == r2.verdict == Verdict.SUPPORTS
 
@@ -299,7 +308,7 @@ async def test_unknown_verdict_falls_back_to_abstract_too_thin(cache, monkeypatc
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.ABSTRACT_TOO_THIN
 
 
@@ -319,7 +328,7 @@ async def test_role_flows_through_from_llm_response(cache, monkeypatch):
         r = await v.verify(
             _cite(sentence="We use HST [tan2011hst]."),
             _ref("tan2011hst"),
-            can,
+            _res(can),
             model="x",
             fetch_cited=False,
         )
@@ -342,7 +351,7 @@ async def test_unknown_role_parses_as_none(cache, monkeypatch):
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        r = await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert r.role is None
     assert r.verdict == Verdict.SUPPORTS
 
@@ -360,7 +369,7 @@ async def test_prompt_includes_role_classification_step(cache, monkeypatch):
 
     monkeypatch.setattr(verify_mod, "acompletion_json", fake_json)
     async with Verifier(cache=cache) as v:
-        await v.verify(_cite(), _ref("1"), can, model="x", fetch_cited=False)
+        await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
 
     prompt = captured["user"]
     assert "method_attribution" in prompt
@@ -368,3 +377,45 @@ async def test_prompt_includes_role_classification_step(cache, monkeypatch):
     assert "background" in prompt
     # The key methodological rule that we want preserved.
     assert "method paper" in prompt.lower() or "method attribution" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# de-conflation (U6): infrastructure failure is not an honest abstention / ghost
+
+
+@pytest.mark.asyncio
+async def test_degraded_resolution_is_verification_unavailable(cache):
+    """A DEGRADED resolution (a source failed transiently after retries) must surface as
+    VERIFICATION_UNAVAILABLE — never a false ghost."""
+    async with Verifier(cache=cache) as v:
+        r = await v.verify(
+            _cite(), _ref("1"), Resolution(status=ResolutionStatus.DEGRADED), model="x"
+        )
+    assert r.verdict == Verdict.VERIFICATION_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_unresolved_resolution_stays_target_unavailable(cache):
+    """An UNRESOLVED resolution (every source authoritatively missed) is a true ghost —
+    TARGET_UNAVAILABLE, unchanged."""
+    async with Verifier(cache=cache) as v:
+        r = await v.verify(
+            _cite(), _ref("1"), Resolution(status=ResolutionStatus.UNRESOLVED), model="x"
+        )
+    assert r.verdict == Verdict.TARGET_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_is_verification_unavailable_not_abstract_thin(cache, monkeypatch):
+    """Headline de-conflation: a failed verify model call (after retries) is
+    VERIFICATION_UNAVAILABLE, NOT a fake honest ABSTRACT_TOO_THIN. Contrast with
+    test_unknown_verdict_falls_back_to_abstract_too_thin, which is a real model response."""
+    can = _canonical(abstract="some abstract")
+
+    async def boom(**_):
+        raise RuntimeError("model call failed after retries")
+
+    monkeypatch.setattr(verify_mod, "acompletion_json", boom)
+    async with Verifier(cache=cache) as v:
+        r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
+    assert r.verdict == Verdict.VERIFICATION_UNAVAILABLE

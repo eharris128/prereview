@@ -45,6 +45,8 @@ from .models import (
     Citation,
     CitationRole,
     Reference,
+    Resolution,
+    ResolutionStatus,
     VerificationResult,
     Verdict,
 )
@@ -247,12 +249,29 @@ class Verifier:
         self,
         citation: Citation,
         reference: Reference,
-        canonical: Optional[CanonicalRecord],
+        resolution: Resolution,
         *,
         model: str,
         fetch_cited: bool = True,
         verbose: bool = False,
     ) -> VerificationResult:
+        if resolution.status == ResolutionStatus.DEGRADED:
+            # Couldn't resolve due to infrastructure (a source failed transiently after
+            # retries) — distinct from an authoritative "not found", and never a ghost.
+            return VerificationResult(
+                ref_id=reference.ref_id,
+                citation=citation,
+                reference=reference,
+                canonical=None,
+                verdict=Verdict.VERIFICATION_UNAVAILABLE,
+                rationale=(
+                    "Could not resolve this reference — a scholarly API failed after "
+                    "retries. Not confirmed absent; re-run to verify."
+                ),
+                abstract_only=True,
+            )
+
+        canonical = resolution.record
         if canonical is None:
             return VerificationResult(
                 ref_id=reference.ref_id,
@@ -333,8 +352,8 @@ class Verifier:
                 citation=citation,
                 reference=reference,
                 canonical=canonical,
-                verdict=Verdict.ABSTRACT_TOO_THIN,
-                rationale=f"Verification model call failed; treating as undecided.",
+                verdict=Verdict.VERIFICATION_UNAVAILABLE,
+                rationale="Verification model call failed after retries; the citation could not be checked.",
                 abstract_only=abstract_only,
             )
 
@@ -509,7 +528,7 @@ def _extract_pdf_text(data: bytes) -> str:
 async def verify_citation(
     citation: Citation,
     reference: Reference,
-    canonical: Optional[CanonicalRecord],
+    resolution: Resolution,
     *,
     model: str,
     fetch_cited: bool = True,
@@ -522,7 +541,7 @@ async def verify_citation(
         return await v.verify(
             citation,
             reference,
-            canonical,
+            resolution,
             model=model,
             fetch_cited=fetch_cited,
             verbose=verbose,

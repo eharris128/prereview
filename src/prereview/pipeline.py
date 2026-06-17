@@ -96,11 +96,12 @@ async def run_pipeline(
             if ref is None:
                 continue
             resolution = canonical_by_ref.get(cit.ref_id)
-            canonical = resolution.record if resolution else None
+            if resolution is None:
+                continue  # defensive: resolve populated an entry for every reference
             result = await verifier.verify(
                 cit,
                 ref,
-                canonical,
+                resolution,
                 model=model,
                 fetch_cited=fetch_cited,
                 verbose=verbose,
