@@ -16,6 +16,7 @@ dependencies = [
     "litellm>=1.50",
     "pydantic>=2.7",
     "pypdf>=4.2",
+    "tenacity>=9.0",
 ]
 
 [project.optional-dependencies]
