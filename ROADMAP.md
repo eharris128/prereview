@@ -9,6 +9,7 @@ Deterministic checks and metadata enrichments rendered alongside Citation Issues
 - **Hygiene checks** (`bd54a6e`) — broken `\ref` / `\cref` / `\eqref` cross-references, and bibliography entries that are never `\cite`-d.
 - **Retraction detection** (`3dba07d`) — OpenAlex's `is_retracted` flag (mirrors Retraction Watch). Runs as a follow-up DOI lookup for Crossref / Semantic Scholar / arXiv primary hits, so retraction surfaces regardless of which source resolved the reference.
 - **Link health** (`92b9bde`) — probes `\url{}`, `\href{}{}`, and `.bib` `url =` fields for reachability (HEAD with GET fallback, async-bounded).
+- **Reproducibility-checklist linter** (`bc708c7`) — parses a venue reproducibility checklist (AAAI-27) from the `.tex` source and renders a dedicated section with two tiers of finding: self-consistency (unanswered items, responses outside the allowed option set, gate-vs-subitem contradictions) and claim-vs-paper presence checks (a "yes" to code/dataset availability, computing infrastructure, or number of runs with no supporting evidence in the paper). Deterministic and advisory-framed; auto-discovered via `\input` or sibling `ReproducibilityChecklist.tex`, with `--checklist` / `--no-checklist`. TeX-only. Follow-ups deferred: other venues' checklists (NeurIPS / ACL-ARR), reachability-aware cross-checks, and a broader venue-rules table.
 
 ## Queued — informed by 2026-04-29 deep-research synthesis
 
