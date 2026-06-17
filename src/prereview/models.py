@@ -15,6 +15,12 @@ class Verdict(str, Enum):
     ABSTRACT_TOO_THIN = "abstract_too_thin"
     TARGET_UNAVAILABLE = "target_unavailable"
     METADATA_MISMATCH = "metadata_mismatch"
+    # Verification could not be completed for infrastructure reasons — the reference
+    # failed to resolve transiently (every source errored after retries), or the
+    # verify model call failed after retries. Distinct from a genuine
+    # TARGET_UNAVAILABLE (authoritatively resolved nowhere) and from an honest
+    # ABSTRACT_TOO_THIN. Never rendered as a paper-level citation problem.
+    VERIFICATION_UNAVAILABLE = "verification_unavailable"
 
 
 class CitationRole(str, Enum):
@@ -60,6 +66,27 @@ class CanonicalRecord(BaseModel):
     abstract: Optional[str] = None
     open_access_pdf_url: Optional[str] = None
     is_retracted: bool = False
+
+
+class ResolutionStatus(str, Enum):
+    """Outcome of resolving one reference against the scholarly APIs.
+
+    Separates a genuine "not found anywhere" (every source gave an authoritative
+    terminal answer) from an infrastructure failure (at least one source failed
+    transiently after retries). The verifier maps these to different verdicts so a
+    transient outage is never laundered into a false ghost citation.
+    """
+
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"  # every source authoritatively "not here" — a true ghost
+    DEGRADED = "degraded"  # >=1 source failed transiently after retries; not confirmed absent
+
+
+class Resolution(BaseModel):
+    """Result of resolving one Reference: a status plus the record when found."""
+
+    status: ResolutionStatus
+    record: Optional[CanonicalRecord] = None
 
 
 class Citation(BaseModel):
@@ -176,6 +203,30 @@ class VerificationResult(BaseModel):
     role: Optional[CitationRole] = None  # None for non-LLM verdicts (ghost, mismatch).
 
 
+class CoverageReport(BaseModel):
+    """Run-level integrity signal: did the review actually cover everything?
+
+    Separates recovered-after-retry, honestly-uncertain, and non-recoverable
+    outcomes so a review that *looks* complete can be verified complete. Rendered as
+    a dedicated review section and used to choose the CLI exit code.
+    """
+
+    references_parsed: int = 0
+    citations_checked: int = 0
+    resolved: int = 0
+    ghost_unresolved: int = 0  # true ghosts: every source authoritatively not-found
+    resolution_degraded: int = 0  # could not resolve (infrastructure failure after retries)
+    verification_degraded: int = 0  # resolved, but the verify model call failed after retries
+    recovered_after_retry: int = 0  # transient calls that succeeded on a retry
+    circuit_broken_sources: list[str] = Field(default_factory=list)  # sources stopped mid-run
+    synthesis_degraded: bool = False  # prose pass failed; deterministic sections still written
+
+    @property
+    def has_coverage_gap(self) -> bool:
+        """True when some citation could not be checked for infrastructure reasons."""
+        return (self.resolution_degraded + self.verification_degraded) > 0
+
+
 class ReviewBundle(BaseModel):
     """Everything stage 4 (synthesize) needs to write the review."""
 
@@ -186,3 +237,4 @@ class ReviewBundle(BaseModel):
     fetched_full_text_count: int = 0
     abstract_only_count: int = 0
     unresolved_count: int = 0
+    coverage: Optional[CoverageReport] = None
