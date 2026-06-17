@@ -118,7 +118,7 @@ class _MinIntervalGate:
 
 @dataclass
 class _SourceConfig:
-    crossref_min_interval: float = 0.35   # ~3 RPS
+    crossref_min_interval: float = 1.0    # >=1 r/s — public-pool list-endpoint limit (Dec 2025)
     s2_min_interval: float = 1.1          # ~1 RPS shared
     arxiv_min_interval: float = 3.0       # arXiv asks for 3s
     openalex_min_interval: float = 0.2    # ~5 RPS
@@ -152,12 +152,14 @@ class Resolver:
         *,
         cache: Cache,
         s2_api_key: Optional[str] = None,
+        openalex_api_key: Optional[str] = None,
         polite_mailto: Optional[str] = None,
         verbose: bool = False,
         timeout_s: float = 30.0,
     ):
         self.cache = cache
         self.s2_api_key = s2_api_key
+        self.openalex_api_key = openalex_api_key
         self.polite_mailto = polite_mailto
         self.verbose = verbose
         ua = f"prereview/{__version__} (https://github.com/echarris/prereview"
@@ -445,27 +447,35 @@ class Resolver:
         return (_Outcome.TRANSIENT_FAIL if transient else _Outcome.TERMINAL_MISS), None
 
     async def _openalex_is_retracted(self, doi: str) -> bool:
-        """Lightweight retraction-only OpenAlex check by DOI.
+        """Lightweight retraction-only OpenAlex check by DOI, via the retry helper.
 
-        Used as a follow-up when the primary resolver hit was Crossref / S2 /
-        arXiv (none of which expose retraction status reliably). Returns False
-        on any non-200 / parse error — a missed retraction is preferable to a
-        false positive that would scare a user about a perfectly valid paper.
+        Used as a follow-up when the primary resolver hit was Crossref / S2 / arXiv
+        (none of which expose retraction status reliably). Returns False on any
+        non-OK outcome (transient, terminal, or unparseable) — a missed retraction is
+        preferable to a false positive that would scare a user about a valid paper.
+        Routed through ``_request`` so it honors the OpenAlex key, retry/backoff, and
+        the circuit breaker like the resolver's own calls.
         """
         params = {}
-        if self.polite_mailto:
-            params["mailto"] = self.polite_mailto
-        await self._g_openalex.wait()
-        url = f"https://api.openalex.org/works/doi:{quote(doi, safe='')}"
-        r = await self.client.get(url, params=params)
-        if r.status_code != 200:
-            return False
-        return bool(r.json().get("is_retracted"))
+        if self.openalex_api_key:
+            params["api_key"] = self.openalex_api_key
+        tag, payload = await self._request(
+            "openalex",
+            self._g_openalex,
+            f"https://api.openalex.org/works/doi:{quote(doi, safe='')}",
+            params=params or None,
+        )
+        if tag == "ok":
+            return bool(payload.get("is_retracted"))
+        return False
 
     async def _openalex(self, ref: Reference, doi: Optional[str]) -> tuple[_Outcome, Optional[CanonicalRecord]]:
+        # OpenAlex requires a free API key since 2026-02-13; the polite-pool mailto is
+        # gone. Send the key when set, and treat a 409 (keyless / daily credits
+        # exhausted) as infrastructure-degraded, never as an authoritative "not found".
         params: dict = {}
-        if self.polite_mailto:
-            params["mailto"] = self.polite_mailto
+        if self.openalex_api_key:
+            params["api_key"] = self.openalex_api_key
         transient = False
 
         if doi:
@@ -475,11 +485,11 @@ class Resolver:
                 f"https://api.openalex.org/works/doi:{quote(doi, safe='')}",
                 params=params or None,
             )
-            if tag == "transient":
+            if tag == "transient" or (tag == "terminal" and payload == 409):
                 transient = True
             elif tag == "ok":
                 return _Outcome.HIT, _openalex_to_record(payload)
-            # terminal (404) → fall through to the search
+            # terminal 404 → fall through to the search
 
         if ref.title:
             tag, payload = await self._request(
@@ -488,7 +498,7 @@ class Resolver:
                 "https://api.openalex.org/works",
                 params={"search": ref.title, "per-page": "5", **params},
             )
-            if tag == "transient":
+            if tag == "transient" or (tag == "terminal" and payload == 409):
                 transient = True
             elif tag == "ok":
                 for item in payload.get("results", []):
@@ -506,12 +516,14 @@ async def resolve_reference(
     *,
     cache: Cache,
     s2_api_key: Optional[str] = None,
+    openalex_api_key: Optional[str] = None,
     polite_mailto: Optional[str] = None,
     verbose: bool = False,
 ) -> Resolution:
     async with Resolver(
         cache=cache,
         s2_api_key=s2_api_key,
+        openalex_api_key=openalex_api_key,
         polite_mailto=polite_mailto,
         verbose=verbose,
     ) as r:

@@ -453,11 +453,12 @@ class Verifier:
         from urllib.parse import quote
 
         url = f"https://api.openalex.org/works/doi:{quote(doi, safe='')}"
+        # OpenAlex dropped the polite-pool mailto (2026-02); send the API key when set.
         params = {}
-        mailto = os.environ.get("PREREVIEW_MAILTO")
-        if mailto:
-            params["mailto"] = mailto
-        r = await self.client.get(url, params=params, timeout=15.0)
+        key = os.environ.get("OPENALEX_API_KEY")
+        if key:
+            params["api_key"] = key
+        r = await self.client.get(url, params=params or None, timeout=15.0)
         if r.status_code != 200:
             return None
         data = r.json()

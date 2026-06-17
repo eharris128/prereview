@@ -48,6 +48,7 @@ async def run_pipeline(
 ) -> Path:
     cache = Cache(cache_dir) if cache_dir else Cache()
     s2_key = os.environ.get("S2_API_KEY")
+    openalex_key = os.environ.get("OPENALEX_API_KEY")
 
     suffix = pdf_path.suffix.lower()
     if suffix == ".tex":
@@ -76,6 +77,7 @@ async def run_pipeline(
     async with Resolver(
         cache=cache,
         s2_api_key=s2_key,
+        openalex_api_key=openalex_key,
         polite_mailto=polite_mailto,
         verbose=verbose,
     ) as resolver:

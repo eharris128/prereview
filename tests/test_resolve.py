@@ -523,3 +523,46 @@ async def test_resolve_circuit_breaker_trips_after_consecutive_failures(fast_res
             calls_after = s2.call_count
     assert tripped
     assert calls_after == calls_at_trip  # no further S2 calls after the breaker tripped
+
+
+# ---------------------------------------------------------------------------
+# OpenAlex post-2026-02 access model (U4): API key, no mailto, 409 = infra
+
+
+@pytest.mark.asyncio
+async def test_openalex_sends_api_key_not_mailto(fast_resolver):
+    """Post-2026-02, OpenAlex needs an API key and ignores the (removed) mailto. The
+    request must carry api_key and must NOT carry mailto, even when --mailto is set."""
+    ref = Reference(
+        ref_id="r1", raw_text="x", title="A Toy Paper About Toys", doi="10.1234/example"
+    )
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(host="api.crossref.org").respond(404)
+        mock.get(host="api.semanticscholar.org").respond(404)
+        mock.get(host="export.arxiv.org").respond(text="<feed/>")
+        oa = mock.get("https://api.openalex.org/works/doi:10.1234%2Fexample").respond(
+            json=OPENALEX_DOI_HIT
+        )
+        async with fast_resolver(openalex_api_key="SECRET", polite_mailto="me@x.org") as r:
+            res = await r.resolve(ref)
+    assert res.status == ResolutionStatus.RESOLVED and res.record.source == "openalex"
+    assert oa.called
+    query = str(oa.calls.last.request.url)
+    assert "api_key=SECRET" in query
+    assert "mailto" not in query
+
+
+@pytest.mark.asyncio
+async def test_openalex_409_is_degraded_not_ghost(fast_resolver):
+    """A 409 from OpenAlex (keyless / daily credits exhausted) is infrastructure-
+    degraded, never an authoritative 'not found' — it must not produce a false ghost."""
+    ref = Reference(ref_id="r1", raw_text="x", title="A Real Paper", doi="10.1234/real")
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get("https://api.crossref.org/works/10.1234%2Freal").respond(404)
+        mock.get(host="api.crossref.org", path="/works").respond(json={"message": {"items": []}})
+        mock.get(host="api.semanticscholar.org").respond(404)
+        mock.get(host="export.arxiv.org").respond(text="<feed/>")
+        mock.get(host="api.openalex.org").respond(409)
+        async with fast_resolver() as r:
+            res = await r.resolve(ref)
+    assert res.status == ResolutionStatus.DEGRADED

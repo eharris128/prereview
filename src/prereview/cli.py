@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
 _DOTENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "S2_API_KEY",
+    "OPENALEX_API_KEY",
     "PREREVIEW_MAILTO",
 )
 
