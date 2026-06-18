@@ -70,6 +70,16 @@ def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
     assert captured["authors"] == "Smith"
 
 
+def test_parser_show_rating_default_off():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.show_rating is False
+
+
+def test_parser_show_rating_flag():
+    args = _build_parser().parse_args(["paper.tex", "--show-rating"])
+    assert args.show_rating is True
+
+
 def test_parser_reviewer2_default_on():
     args = _build_parser().parse_args(["paper.tex"])
     assert args.run_reviewer2 is True
@@ -176,9 +186,10 @@ def test_main_threads_venue_and_baseline_to_pipeline(tmp_path: Path, monkeypatch
     tex = tmp_path / "p.tex"
     tex.write_text(r"\documentclass{article}")
 
-    main([str(tex), "--venue", "aaai-27", "--abstract-baseline", str(tmp_path / "ab.txt")])
+    main([str(tex), "--venue", "aaai-27", "--abstract-baseline", str(tmp_path / "ab.txt"), "--show-rating"])
     assert captured["venue"] == "aaai-27"
     assert captured["abstract_baseline"] == (tmp_path / "ab.txt").resolve()
+    assert captured["show_rating"] is True
 
 
 def test_main_errors_on_missing_checklist(tmp_path: Path):

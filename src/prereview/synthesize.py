@@ -689,7 +689,9 @@ def render_methodology(bundle: ReviewBundle) -> str:
     - **Missing prior work** — `prereview` only verifies citations the author already made; it does
       not search for relevant work the author should have cited.
 
-    The suggested rating is a model judgement and not authoritative.
+    The review leads with a severity-bucketed **Overall assessment**, not a recommendation. The
+    1–10 rating an LLM would assign is shown only under `--show-rating` and is known to skew
+    generous (Keuper 2025) — treat it as secondary.
     """).strip() + "\n"
 
 
@@ -1044,17 +1046,108 @@ def _format_rating(low, high, justification: str) -> str:
     return f"{scale}\n\n{justification.strip()}"
 
 
-def stitch_review(prose: dict, bundle: ReviewBundle, *, reviewer2: Optional[dict] = None) -> str:
+# ---------------------------------------------------------------------------
+# rating reconciliation → severity-bucketed overall assessment (U5)
+#
+# Resolves the standing suggested-rating generosity bias by leading the review
+# with a de-duplicated severity summary aggregated from the findings already
+# produced (Reviewer-2 + submission + citation issues) and dropping the 1–10
+# number from the default output (KTD-6 — the safer default against the exact
+# false-confidence failure mode the plan exists to prevent). The number is still
+# computed by the prose pass but rendered only under --show-rating, with the
+# generosity caveat.
+
+_BUCKET_RANK = {"critical": 0, "major": 1, "minor": 2}
+# Citation verdicts that read as a "major" issue; everything else problematic is "minor".
+_CITATION_MAJOR = (Verdict.TARGET_UNAVAILABLE, Verdict.METADATA_MISMATCH, Verdict.DOES_NOT_SUPPORT)
+
+
+def _overall_assessment(reviewer2: Optional[dict], bundle: ReviewBundle) -> dict[str, int]:
+    """De-duplicated severity counts across Reviewer-2, submission, and citation
+    issues. Keyed by the quoted element so one underlying issue surfacing in two
+    sources is counted once (highest severity wins)."""
+    best_by_key: dict[str, str] = {}
+    uid = 0
+
+    def add(bucket: str, quoted: str) -> None:
+        nonlocal uid
+        key = " ".join((quoted or "").strip().lower().split())
+        if not key:
+            key = f"__anon_{uid}__"
+            uid += 1
+        prev = best_by_key.get(key)
+        if prev is None or _BUCKET_RANK[bucket] < _BUCKET_RANK[prev]:
+            best_by_key[key] = bucket
+
+    for raw in (reviewer2 or {}).get("findings", []) or []:
+        c = _coerce_reviewer2_finding(raw)
+        if c:
+            add(c["severity"], c["evidence"] or c["issue"])
+
+    for f in bundle.paper.submission_findings:
+        bucket = "critical" if f.severity == SubmissionSeverity.BLOCKER else "major"
+        add(bucket, f.evidence or f.detail)
+
+    for ref_id, sites in _group_by_bibkey(bundle.verifications).items():
+        bucket = "major" if _headline_verdict(sites) in _CITATION_MAJOR else "minor"
+        add(bucket, ref_id)
+
+    counts = {"critical": 0, "major": 0, "minor": 0}
+    for bucket in best_by_key.values():
+        counts[bucket] += 1
+    return counts
+
+
+def _render_overall_assessment(
+    prose: dict, bundle: ReviewBundle, reviewer2: Optional[dict], *, show_rating: bool
+) -> str:
+    counts = _overall_assessment(reviewer2, bundle)
+    out = ["## Overall assessment", ""]
+    if counts["critical"] == 0 and counts["major"] == 0:
+        minor_clause = f" ({counts['minor']} minor)" if counts["minor"] else ""
+        out.append(
+            f"**No critical or major concerns surfaced**{minor_clause} across submission "
+            "readiness, citation verification, and the adversarial Reviewer-2 pass. This is "
+            "**not** an accept signal — verify against the venue's bar."
+        )
+    else:
+        out.append(
+            f"**critical: {counts['critical']} · major: {counts['major']} · "
+            f"minor: {counts['minor']}** — across submission readiness, citation "
+            "verification, and Reviewer-2. Address the critical and major items first."
+        )
+    out.append("")
+    out.append(
+        "_A severity summary of the issues surfaced elsewhere in this review, de-duplicated "
+        "across sources. It is **not** an accept/reject recommendation — prereview does not "
+        "issue a verdict._"
+    )
+    if show_rating:
+        rating = _format_rating(
+            prose.get("rating_low"),
+            prose.get("rating_high"),
+            prose.get("rating_justification") or "Rating reflects an LLM judgement; treat as suggestive.",
+        )
+        out.append("")
+        out.append("### LLM-estimated rating (secondary)")
+        out.append("")
+        out.append(rating)
+        out.append("")
+        out.append(
+            "_The 1–10 rating is an LLM estimate and is known to skew generous "
+            "(Keuper 2025); treat it as secondary to the severity summary above._"
+        )
+    return "\n".join(out)
+
+
+def stitch_review(
+    prose: dict, bundle: ReviewBundle, *, reviewer2: Optional[dict] = None, show_rating: bool = False
+) -> str:
     paper = bundle.paper
     summary = (prose.get("summary") or "_(no summary returned)_").strip()
     strengths = _bullets(prose.get("strengths") or [])
     weaknesses = _bullets(prose.get("weaknesses") or [])
     questions = _bullets(prose.get("questions") or [])
-    rating = _format_rating(
-        prose.get("rating_low"),
-        prose.get("rating_high"),
-        prose.get("rating_justification") or "Rating reflects an LLM judgement; treat as suggestive.",
-    )
 
     head = f"# Pre-submission review\n\n**Paper:** {paper.title or '(title not extracted)'}\n"
 
@@ -1070,6 +1163,9 @@ def stitch_review(prose: dict, bundle: ReviewBundle, *, reviewer2: Optional[dict
     submission = render_submission_section(bundle)
     if submission is not None:
         sections.append(submission.strip())
+    # Honest overall signal: lead with the de-duplicated severity summary, not an
+    # inflated 1–10 (U5). The number is opt-in via --show-rating.
+    sections.append(_render_overall_assessment(prose, bundle, reviewer2, show_rating=show_rating))
     sections += [
         "## Summary",
         summary,
@@ -1092,8 +1188,6 @@ def stitch_review(prose: dict, bundle: ReviewBundle, *, reviewer2: Optional[dict
         [
             "## Questions for the author",
             questions,
-            "## Suggested rating",
-            rating,
             render_methodology(bundle).strip(),
             "",
         ]
@@ -1106,7 +1200,7 @@ def stitch_review(prose: dict, bundle: ReviewBundle, *, reviewer2: Optional[dict
 
 
 async def synthesize_review(
-    bundle: ReviewBundle, *, verbose: bool = False, run_reviewer2: bool = True
+    bundle: ReviewBundle, *, verbose: bool = False, run_reviewer2: bool = True, show_rating: bool = False
 ) -> str:
     _log(verbose, f"prose pass via {bundle.synthesis_model}")
     try:
@@ -1134,4 +1228,4 @@ async def synthesize_review(
                 bundle.coverage.reviewer2_degraded = True
             reviewer2 = None
 
-    return stitch_review(prose, bundle, reviewer2=reviewer2)
+    return stitch_review(prose, bundle, reviewer2=reviewer2, show_rating=show_rating)

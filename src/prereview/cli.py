@@ -78,6 +78,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(run_reviewer2=True)
     p.add_argument(
+        "--show-rating",
+        action="store_true",
+        help=(
+            "Include the LLM-estimated 1–10 rating (with a generosity caveat) in the Overall "
+            "assessment. Default: off — the review leads with severity buckets only."
+        ),
+    )
+    p.add_argument(
         "--venue",
         default=DEFAULT_VENUE,
         choices=sorted(VENUE_RULES),
@@ -197,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                     else None
                 ),
                 run_reviewer2=args.run_reviewer2,
+                show_rating=args.show_rating,
                 verbose=args.verbose,
             )
         )

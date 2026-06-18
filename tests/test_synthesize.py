@@ -757,12 +757,12 @@ async def test_synthesize_review_full_pass(monkeypatch):
     # Section headers all present.
     for h in (
         "# Pre-submission review",
+        "## Overall assessment",
         "## Summary",
         "## Strengths",
         "## Weaknesses",
         "## Citation issues",
         "## Questions for the author",
-        "## Suggested rating",
         "## Methodology and limits of this review",
     ):
         assert h in md, f"missing header: {h}"
@@ -776,8 +776,10 @@ async def test_synthesize_review_full_pass(monkeypatch):
     # The well-supported full-text cite should not appear in issues.
     assert "goodcite" not in issues_block
 
-    # Rating range present.
-    assert "4–6/10" in md or "4-6/10" in md
+    # U5: the 1–10 rating is dropped from the default output; the review leads with
+    # the severity-bucketed Overall assessment instead.
+    assert "LLM-estimated rating" not in md
+    assert md.index("## Overall assessment") < md.index("## Summary")
 
     # Methodology lists what the tool does NOT do.
     assert "Missing prior work" in md
@@ -982,3 +984,77 @@ async def test_reviewer2_failure_does_not_mislabel_prose(monkeypatch):
     assert bundle.coverage.synthesis_degraded is False
     assert "Reviewer 2" in md and "could not be generated" in md
     assert "narrative sections" not in md  # the prose sections are NOT mislabeled
+
+
+# ---------------------------------------------------------------------------
+# U5: rating reconciliation → severity-bucketed overall assessment
+
+
+def test_overall_assessment_headline_counts():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    reviewer2 = {"findings": [
+        {"dimension": "novelty", "severity": "critical", "issue": "a", "evidence": "e1"},
+        {"dimension": "baselines", "severity": "major", "issue": "b", "evidence": "e2"},
+        {"dimension": "claims", "severity": "major", "issue": "c", "evidence": "e3"},
+    ]}
+    md = syn._render_overall_assessment({}, bundle, reviewer2, show_rating=False)
+    assert "critical: 1 · major: 2 · minor: 0" in md
+    assert "LLM-estimated rating" not in md  # no rating number by default
+
+
+def test_overall_assessment_no_findings_headline():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    md = syn._render_overall_assessment({}, bundle, {"findings": []}, show_rating=False)
+    assert "no critical or major concerns" in md.lower()
+
+
+def test_overall_assessment_dedups_same_issue_across_sources():
+    """One underlying issue surfacing as both a submission blocker and a Reviewer-2
+    critical (same quoted element) is counted once, not twice."""
+    paper = IngestedPaper(
+        title="P", references={}, citations=[],
+        submission_checked=True,
+        submission_findings=[
+            SubmissionFinding(
+                kind=SubmissionFindingKind.COLOR_TABLE, severity=SubmissionSeverity.BLOCKER,
+                detail="color table", evidence="cellcolor in Table 2",
+            )
+        ],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    reviewer2 = {"findings": [
+        {"dimension": "clarity", "severity": "critical", "issue": "colored table", "evidence": "cellcolor in Table 2"},
+    ]}
+    counts = syn._overall_assessment(reviewer2, bundle)
+    assert counts["critical"] == 1  # deduped — NOT the sum (2)
+
+
+def test_stitch_default_omits_rating_number():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    md = syn.stitch_review(
+        {"rating_low": 8, "rating_high": 9, "rating_justification": "j"}, bundle
+    )
+    assert "## Overall assessment" in md
+    assert "LLM-estimated rating" not in md
+
+
+def test_stitch_show_rating_includes_caveated_number():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    md = syn.stitch_review(
+        {"rating_low": 8, "rating_high": 9, "rating_justification": "j"}, bundle, show_rating=True
+    )
+    assert "LLM-estimated rating" in md
+    assert "8–9/10" in md
+    assert "keuper" in md.lower() or "skew generous" in md.lower()
+
+
+def test_overall_assessment_leads_with_severity_not_number():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    reviewer2 = {"findings": [{"dimension": "novelty", "severity": "critical", "issue": "x", "evidence": "e"}]}
+    md = syn._render_overall_assessment(
+        {"rating_low": 9, "rating_high": 10, "rating_justification": "j"}, bundle, reviewer2, show_rating=True
+    )
+    # Even with the number shown, the severity headline comes first and the number
+    # is labeled secondary with the caveat.
+    assert md.index("critical:") < md.index("/10")
+    assert "secondary" in md.lower()
