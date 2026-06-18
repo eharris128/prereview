@@ -176,6 +176,37 @@ class ChecklistFinding(BaseModel):
     detail: str = ""  # allowed options (invalid_response) or evidence sought (claim_unsupported)
 
 
+class AnonymizationFindingKind(str, Enum):
+    """What kind of double-blind anonymization risk a finding represents.
+
+    All are deterministic, source-level, and **advisory** — each is framed
+    "verify this does not deanonymize you", never an accusation that the author
+    leaked their identity. ``DUAL_SUBMISSION_TELL`` is a cheap in-paper phrasing
+    signal, not real cross-venue detection.
+    """
+
+    RESIDUAL_IDENTITY = "residual_identity"  # \author/\thanks/\affiliation/\email with real content
+    SELF_REVEALING_PHRASE = "self_revealing_phrase"  # "in our previous work [4]"
+    IDENTITY_URL = "identity_url"  # github/gitlab/personal-homepage URL
+    ACKNOWLEDGMENTS_PRESENT = "acknowledgments_present"  # acks section in a submission build
+    AUTHOR_NAME_IN_BODY = "author_name_in_body"  # name-aware (--authors) surname in running prose
+    DUAL_SUBMISSION_TELL = "dual_submission_tell"  # "under review at X" phrasing
+
+
+class AnonymizationFinding(BaseModel):
+    """A single double-blind anonymization risk surfaced to the author.
+
+    Mirrors :class:`ChecklistFinding`: a deterministic, source-level finding
+    rendered in its own review section. ``evidence`` quotes the exact offending
+    fragment so the author can locate it; ``detail`` says why it is a risk and
+    keeps the advisory "verify" framing.
+    """
+
+    kind: AnonymizationFindingKind
+    evidence: str  # the exact offending fragment, quoted verbatim
+    detail: str = ""  # why it is a deanonymization risk, framed as "verify"
+
+
 class IngestedPaper(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
@@ -202,6 +233,12 @@ class IngestedPaper(BaseModel):
     section_titles: list[str] = Field(default_factory=list)
     page_count: Optional[int] = None
     references_start_page: Optional[int] = None
+    # Anonymization audit output (TeX-only; U2). ``anonymization_checked``
+    # distinguishes "audit ran (and was clean if no findings)" from "audit did
+    # not run" (the PDF path, or ``--no-anonymize``), which the renderer needs to
+    # tell a clean confirmation apart from a skipped section.
+    anonymization_checked: bool = False
+    anonymization_findings: list[AnonymizationFinding] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):

@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .anonymize import audit_anonymization
 from .checklist import (
     check_claims_vs_paper,
     check_self_consistency,
@@ -25,7 +26,15 @@ from .checklist import (
     parse_checklist,
 )
 from .ingest import _surrounding_sentence
-from .models import BrokenRef, ChecklistFinding, Citation, IngestedPaper, LinkCheck, Reference
+from .models import (
+    AnonymizationFinding,
+    BrokenRef,
+    ChecklistFinding,
+    Citation,
+    IngestedPaper,
+    LinkCheck,
+    Reference,
+)
 
 _CHECKSUB_RE = re.compile(r"\\checksubsection\b")
 
@@ -722,6 +731,8 @@ async def ingest_tex(
     bib_path: Optional[Path] = None,
     checklist_path: Optional[Path] = None,
     run_checklist: bool = True,
+    run_anonymize: bool = True,
+    authors: Optional[str] = None,
 ) -> IngestedPaper:
     """Ingest a .tex file (and its sibling .bib) into an :class:`IngestedPaper`.
 
@@ -793,6 +804,20 @@ async def ingest_tex(
                 f"found {len(checklist_findings)} checklist issue(s) across {len(items)} item(s)",
             )
 
+    anonymization_checked = False
+    anonymization_findings: list[AnonymizationFinding] = []
+    if run_anonymize:
+        anonymization_checked = True
+        anonymization_findings = audit_anonymization(
+            tex_text=tex_text,
+            body=body,
+            author_block=author_block,
+            acknowledgments=acknowledgments,
+            link_checks=link_checks,
+            authors=authors,
+        )
+        _log(verbose, f"anonymization audit: {len(anonymization_findings)} finding(s)")
+
     return IngestedPaper(
         title=title,
         abstract=abstract,
@@ -807,4 +832,6 @@ async def ingest_tex(
         author_block=author_block,
         acknowledgments=acknowledgments,
         section_titles=section_titles,
+        anonymization_checked=anonymization_checked,
+        anonymization_findings=anonymization_findings,
     )

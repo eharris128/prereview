@@ -50,6 +50,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(run_checklist=True)
     p.add_argument(
+        "--no-anonymize",
+        dest="run_anonymize",
+        action="store_false",
+        help="(.tex mode only) Skip the double-blind anonymization audit (default: on for .tex).",
+    )
+    p.set_defaults(run_anonymize=True)
+    p.add_argument(
+        "--authors",
+        default=None,
+        metavar="\"Surname,Surname\"",
+        help=(
+            "(.tex mode only) Comma-separated author surnames to also grep for in the body "
+            "as an extra anonymization check. Hits inside \\cite{} and hyphenated method "
+            "names (e.g. Smith-Waterman) are suppressed."
+        ),
+    )
+    p.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -134,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
                 bib_path=args.bib,
                 checklist_path=checklist_path,
                 run_checklist=args.run_checklist,
+                run_anonymize=args.run_anonymize,
+                authors=args.authors,
                 verbose=args.verbose,
             )
         )

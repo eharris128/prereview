@@ -31,6 +31,45 @@ def test_parser_explicit_checklist_path():
     assert args.checklist == Path("c.tex")
 
 
+def test_parser_defaults_run_anonymize_true():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.run_anonymize is True
+    assert args.authors is None
+
+
+def test_parser_no_anonymize_flag():
+    args = _build_parser().parse_args(["paper.tex", "--no-anonymize"])
+    assert args.run_anonymize is False
+
+
+def test_parser_authors_flag_parses():
+    args = _build_parser().parse_args(["paper.tex", "--authors", "Smith,Jones"])
+    assert args.authors == "Smith,Jones"
+
+
+def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
+    """--no-anonymize and --authors must reach run_pipeline."""
+    from prereview import cli
+    from prereview.models import CoverageReport
+
+    captured = {}
+    out = tmp_path / "p.review.md"
+
+    async def fake_run(*a, **kw):
+        captured.update(kw)
+        out.write_text("# review\n")
+        return out, CoverageReport()
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    tex = tmp_path / "p.tex"
+    tex.write_text(r"\documentclass{article}")
+
+    main([str(tex), "--no-anonymize", "--authors", "Smith"])
+    assert captured["run_anonymize"] is False
+    assert captured["authors"] == "Smith"
+
+
 def test_main_errors_on_missing_checklist(tmp_path: Path):
     tex = tmp_path / "paper.tex"
     tex.write_text(r"\documentclass{article}")

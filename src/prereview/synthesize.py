@@ -18,6 +18,7 @@ from typing import Iterable, Optional
 
 from .llm import acompletion_json
 from .models import (
+    AnonymizationFindingKind,
     ChecklistFinding,
     ChecklistFindingKind,
     CitationRole,
@@ -460,6 +461,69 @@ def _checklist_methodology_sentence(bundle: ReviewBundle) -> str:
     )
 
 
+# Fixed render order; also where anonymization kinds map to user-facing headings.
+_ANON_SUBHEADINGS: dict[AnonymizationFindingKind, str] = {
+    AnonymizationFindingKind.RESIDUAL_IDENTITY: "Residual identity blocks",
+    AnonymizationFindingKind.SELF_REVEALING_PHRASE: "Self-revealing phrasing",
+    AnonymizationFindingKind.IDENTITY_URL: "Identity-revealing URLs",
+    AnonymizationFindingKind.ACKNOWLEDGMENTS_PRESENT: "Acknowledgments present",
+    AnonymizationFindingKind.AUTHOR_NAME_IN_BODY: "Author names in the body",
+    AnonymizationFindingKind.DUAL_SUBMISSION_TELL: "Dual-submission phrasing",
+}
+
+
+def render_anonymization_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Anonymization audit section, or None when the audit did
+    not run.
+
+    Three states, mirroring :func:`render_checklist_section`'s contract: a one-line
+    note when the input was a PDF (the audit is .tex-source-only), ``None`` when it
+    was explicitly disabled (``--no-anonymize``), a clean confirmation when it ran
+    with nothing flagged, and a grouped breakdown otherwise. Every finding is
+    framed "verify" — the audit surfaces candidates, it does not confirm a leak.
+    """
+    paper = bundle.paper
+    if not paper.anonymization_checked:
+        # Distinguish "PDF input — can't run" from "--no-anonymize — truly off".
+        # Only the PDF path sets page_count, so it is the reliable input-kind tell.
+        if paper.page_count is not None:
+            return (
+                "## Anonymization audit\n\n_The anonymization audit runs on .tex "
+                "source only; it was skipped for this PDF input._\n"
+            )
+        return None
+
+    findings = paper.anonymization_findings
+    out: list[str] = ["## Anonymization audit", ""]
+    if not findings:
+        out.append(
+            "No residual author identity, self-revealing phrasing, identity-revealing "
+            "URLs, or acknowledgments section were detected in the .tex source. These "
+            "checks cannot confirm anonymization — still verify manually before submitting."
+        )
+        out.append("")
+        return "\n".join(out)
+
+    out.append(
+        "Deterministic double-blind checks against the .tex source. AAAI desk-rejects "
+        "deanonymized submissions, so each item below is worth a look — but all are "
+        "**advisory**: they quote a candidate fragment for you to **verify**, and "
+        "cannot themselves confirm a leak."
+    )
+    out.append("")
+    for kind, heading in _ANON_SUBHEADINGS.items():
+        group = [f for f in findings if f.kind == kind]
+        if not group:
+            continue
+        out.append(f"### {heading} ({len(group)})")
+        out.append("")
+        for f in group:
+            out.append(f"- {f.detail}")
+            out.append(f"  > {f.evidence}")
+        out.append("")
+    return "\n".join(out)
+
+
 def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     """Coverage & reliability — the trust signal. Renders only when there is an
     infrastructure outcome to disclose (degradation, recovery, a tripped source, or a
@@ -723,6 +787,11 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
     coverage = render_coverage_section(bundle)
     if coverage is not None:
         sections.append(coverage.strip())
+    # Desk-reject guards lead the review: a deanonymized or non-compliant
+    # submission is summarily rejected regardless of content quality.
+    anonymization = render_anonymization_section(bundle)
+    if anonymization is not None:
+        sections.append(anonymization.strip())
     sections += [
         "## Summary",
         summary,

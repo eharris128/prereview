@@ -10,6 +10,8 @@ import pytest
 
 from prereview import synthesize as syn
 from prereview.models import (
+    AnonymizationFinding,
+    AnonymizationFindingKind,
     BrokenRef,
     CanonicalRecord,
     ChecklistFinding,
@@ -563,6 +565,78 @@ def test_render_checklist_section_clean_when_found_but_no_findings():
 def test_render_checklist_section_none_when_not_found():
     bundle = _checklist_bundle(found=False, findings=[])
     assert syn.render_checklist_section(bundle) is None
+
+
+# ---------------------------------------------------------------------------
+# U2: anonymization audit rendering
+
+
+def _anon_bundle(*, checked: bool, findings=None, page_count=None) -> ReviewBundle:
+    paper = IngestedPaper(
+        title="A Paper",
+        references={},
+        citations=[],
+        anonymization_checked=checked,
+        anonymization_findings=findings or [],
+        page_count=page_count,
+    )
+    return ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+
+
+def _anon_findings():
+    K = AnonymizationFindingKind
+    return [
+        AnonymizationFinding(kind=K.RESIDUAL_IDENTITY, evidence="Jane Smith", detail="verify the build is anonymized"),
+        AnonymizationFinding(kind=K.SELF_REVEALING_PHRASE, evidence="In our previous work we showed", detail="verify it does not point to your identity"),
+        AnonymizationFinding(kind=K.IDENTITY_URL, evidence="https://github.com/jsmith/repo", detail="verify it is anonymized"),
+    ]
+
+
+def test_render_anonymization_none_when_not_checked_on_tex():
+    # --no-anonymize on a .tex (no page_count) → section absent.
+    assert syn.render_anonymization_section(_anon_bundle(checked=False)) is None
+
+
+def test_render_anonymization_note_on_pdf_input():
+    # PDF input (page_count set) but audit not run → a one-line TeX-only note.
+    md = syn.render_anonymization_section(_anon_bundle(checked=False, page_count=9))
+    assert md is not None
+    assert "## Anonymization audit" in md
+    assert ".tex" in md and "PDF" in md
+
+
+def test_render_anonymization_clean_when_checked_no_findings():
+    md = syn.render_anonymization_section(_anon_bundle(checked=True, findings=[]))
+    assert md is not None
+    assert "## Anonymization audit" in md
+    assert "verify" in md.lower()
+
+
+def test_render_anonymization_groups_findings_advisory():
+    md = syn.render_anonymization_section(_anon_bundle(checked=True, findings=_anon_findings()))
+    assert md is not None
+    assert "Residual identity blocks (1)" in md
+    assert "Self-revealing phrasing (1)" in md
+    assert "Identity-revealing URLs (1)" in md
+    assert "Jane Smith" in md
+    assert "github.com/jsmith" in md
+    assert "verify" in md.lower()
+    for bad in ("lied", "false", "dishonest", "untruthful"):
+        assert bad not in md.lower()
+
+
+def test_stitch_includes_anonymization_section_before_summary():
+    bundle = _anon_bundle(checked=True, findings=_anon_findings())
+    md = syn.stitch_review({"summary": "s"}, bundle)
+    assert "## Anonymization audit" in md
+    # Desk-reject guard leads the narrative.
+    assert md.index("## Anonymization audit") < md.index("## Summary")
+
+
+def test_stitch_omits_anonymization_section_when_not_checked():
+    bundle = _anon_bundle(checked=False)
+    md = syn.stitch_review({"summary": "s"}, bundle)
+    assert "## Anonymization audit" not in md
 
 
 def test_stitch_omits_checklist_section_when_not_found():

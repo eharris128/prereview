@@ -51,6 +51,8 @@ async def run_pipeline(
     bib_path: Optional[Path] = None,
     checklist_path: Optional[Path] = None,
     run_checklist: bool = True,
+    run_anonymize: bool = True,
+    authors: Optional[str] = None,
     verbose: bool = False,
 ) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -67,6 +69,8 @@ async def run_pipeline(
             bib_path=bib_path,
             checklist_path=checklist_path,
             run_checklist=run_checklist,
+            run_anonymize=run_anonymize,
+            authors=authors,
         )
     else:
         _log(verbose, f"Stage 1: ingesting (pdf mode) {pdf_path}")
