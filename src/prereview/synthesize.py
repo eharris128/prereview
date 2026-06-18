@@ -794,6 +794,226 @@ async def _generate_prose(bundle: ReviewBundle, *, verbose: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# adversarial Reviewer-2 pass (U4)
+#
+# One rubric-anchored LLM pass that surfaces the objections a tough reviewer
+# raises, bucketed by per-dimension severity. Designed to AVOID the documented
+# LLM-reviewer generosity collapse (>95% accept rates): the persona is explicitly
+# adversarial, every dimension must report a finding or an explicit "none", each
+# severity is anchored to a rubric baked into the system prompt (without anchors
+# the model defaults everything to "minor"), and it emits NO accept/reject verdict
+# or score. It is grounded only in the paper plus the tool's own deterministic
+# flags; the novelty dimension cross-examines the paper's OWN citation list.
+
+# (key, user-facing heading) in fixed render order.
+_REVIEWER2_DIMENSIONS: tuple[tuple[str, str], ...] = (
+    ("novelty", "Novelty & positioning"),
+    ("baselines", "Baselines & experiments"),
+    ("claims", "Claims vs. evidence"),
+    ("reproducibility", "Reproducibility"),
+    ("clarity", "Clarity"),
+)
+_REVIEWER2_DIM_KEYS = tuple(k for k, _ in _REVIEWER2_DIMENSIONS)
+
+# Severity coercion (mirrors verify.py's _VALID_* maps). "none"/unknown collapses
+# to None → rendered as "no issue found".
+_VALID_REVIEWER2_SEVERITY = {"critical": "critical", "major": "major", "minor": "minor"}
+_REVIEWER2_SEVERITY_ORDER = {"critical": 0, "major": 1, "minor": 2}
+
+_REVIEWER2_SYSTEM = (
+    "You are Reviewer 2: a sharp, adversarial, but fair-minded reviewer for a top venue "
+    "(AAAI / NeurIPS / ICLR). Your job is to surface the objections a tough reviewer WILL "
+    "raise so the authors can fix them BEFORE submission. You are deliberately skeptical — "
+    "you hunt for what is weak, unsupported, or missing — and every objection you raise "
+    "must quote or name a concrete element of the paper (a specific claim, table, baseline, "
+    "or a named omission). You never praise to be nice.\n\n"
+    "HARD RULES:\n"
+    "- You do NOT output an accept/reject decision or any numeric score, anywhere. Surfacing "
+    "issues, not rating, is your entire job.\n"
+    "- Return an entry for EVERY dimension. If a dimension genuinely has no problem, return "
+    'severity "none" for it — never silently skip a dimension.\n'
+    "- Assign severity strictly against the rubric below. Do NOT default everything to "
+    '"minor"; if a real critical/major issue exists, say so.\n\n'
+    "PER-DIMENSION SEVERITY RUBRIC:\n"
+    "- novelty/positioning — critical: the core contribution is already published (name the "
+    "cited prior work it collapses into); major: the paper overclaims novelty relative to "
+    "cited work; minor: related-work gaps that don't threaten the contribution.\n"
+    "- baselines/experiments — critical: omits the standard SOTA baseline for the task; "
+    "major: missing an obvious ablation or a standard dataset; minor: a baseline is "
+    "under-tuned or a detail is unreported.\n"
+    "- claims-vs-evidence — critical: a headline claim is unsupported by the reported "
+    "results; major: a general claim is backed only by one narrow setting; minor: wording "
+    "stronger than the evidence strictly supports.\n"
+    "- reproducibility — critical: neither code nor enough detail to reproduce the main "
+    "result; major: key hyperparameters / data splits / seeds are missing; minor: incomplete "
+    "environment or compute detail.\n"
+    "- clarity — critical: the method as written cannot be understood or implemented; major: "
+    "a key definition, figure, or symbol is missing or ambiguous; minor: local wording or "
+    "notation issues.\n\n"
+    "Output a single JSON object only — no prose, no fences."
+)
+
+
+def _reviewer2_citation_list(bundle: ReviewBundle, limit: int = 60) -> str:
+    """The paper's own bibliography, as grounding for the novelty dimension's
+    claimed-novelty-vs-cited-prior-art cross-examination."""
+    refs = bundle.paper.references
+    lines: list[str] = []
+    for ref_id, ref in list(refs.items())[:limit]:
+        title = (ref.title or "(no title)").strip()
+        year = f", {ref.year}" if ref.year else ""
+        lines.append(f"- [{ref_id}] {title}{year}")
+    extra = len(refs) - limit
+    if extra > 0:
+        lines.append(f"- ... and {extra} more")
+    return "\n".join(lines) or "(no references parsed)"
+
+
+def _reviewer2_flag_summary(bundle: ReviewBundle) -> str:
+    """A compact summary of the tool's OWN deterministic flags, so Reviewer-2 is
+    grounded in them (e.g. a missing-baseline signal feeds the baselines rubric)."""
+    paper = bundle.paper
+    parts: list[str] = []
+    groups = _group_by_bibkey(bundle.verifications)
+    if groups:
+        parts.append(f"- {len(groups)} cited reference(s) flagged by the citation verifier (unsupported / ghost / mismatch).")
+    if paper.checklist_findings:
+        parts.append(f"- {len(paper.checklist_findings)} reproducibility-checklist issue(s).")
+    if paper.submission_findings:
+        parts.append(f"- {len(paper.submission_findings)} submission-readiness issue(s).")
+    numeric = getattr(paper, "numeric_findings", None)
+    if numeric:
+        parts.append(f"- {len(numeric)} numerical-sanity flag(s) (bounded metrics, split arithmetic, etc.).")
+    if paper.anonymization_findings:
+        parts.append(f"- {len(paper.anonymization_findings)} anonymization risk(s).")
+    return "\n".join(parts) or "(no deterministic flags raised)"
+
+
+def _reviewer2_prompt(bundle: ReviewBundle) -> str:
+    paper = bundle.paper
+    body_text = "\n\n".join(b for _, b in paper.sections) if paper.sections else ""
+    if len(body_text) > 200_000:
+        body_text = body_text[:120_000] + "\n\n[...truncated middle...]\n\n" + body_text[-60_000:]
+
+    return f"""Adversarially review this draft paper. Surface the objections a tough reviewer will raise.
+
+PAPER TITLE: {paper.title or "(unknown)"}
+
+PAPER ABSTRACT:
+\"\"\"{paper.abstract or "(not extracted)"}\"\"\"
+
+PAPER BODY:
+\"\"\"{body_text}\"\"\"
+
+THE PAPER'S OWN CITED REFERENCES (use these for the novelty/positioning dimension — does the
+paper's claimed novelty hold up against what it already cites?):
+{_reviewer2_citation_list(bundle)}
+
+THIS TOOL'S OWN DETERMINISTIC FLAGS (corroborating signal — weave in where relevant):
+{_reviewer2_flag_summary(bundle)}
+
+Return a single JSON object exactly matching this schema:
+
+{{
+  "findings": [
+    {{
+      "dimension": "novelty" | "baselines" | "claims" | "reproducibility" | "clarity",
+      "severity": "critical" | "major" | "minor" | "none",
+      "issue": "the objection, one or two sentences",
+      "evidence": "the concrete paper element it is grounded in (a quoted claim, a table, a baseline name, or a named omission)",
+      "suggested_fix": "what the authors should do about it"
+    }}
+  ]
+}}
+
+Rules:
+- Include an entry for EVERY dimension: novelty, baselines, claims, reproducibility, clarity.
+  Use severity "none" with issue "no issue found" for a dimension that genuinely has no problem.
+- Apply the per-dimension severity rubric from the system prompt; do NOT default to "minor".
+- Every non-"none" finding's "evidence" must name a concrete element of THIS paper.
+- Do NOT include any accept/reject decision or numeric score anywhere in the output.
+"""
+
+
+async def _generate_reviewer2(bundle: ReviewBundle, *, verbose: bool) -> dict:
+    return await acompletion_json(
+        model=bundle.synthesis_model,
+        system=_REVIEWER2_SYSTEM,
+        user=_reviewer2_prompt(bundle),
+        temperature=0.0,
+        max_tokens=8192,
+        verbose=verbose,
+    )
+
+
+def _coerce_reviewer2_finding(raw: dict) -> Optional[dict]:
+    """Keep only the known fields (so a stray ``verdict``/``score`` the model adds
+    can never leak into the output), and coerce the severity. Returns None for a
+    finding with no usable issue text."""
+    if not isinstance(raw, dict):
+        return None
+    dim = str(raw.get("dimension") or "").strip().lower()
+    sev = _VALID_REVIEWER2_SEVERITY.get(str(raw.get("severity") or "").strip().lower())  # None for "none"/unknown
+    issue = str(raw.get("issue") or "").strip()
+    evidence = str(raw.get("evidence") or "").strip()
+    fix = str(raw.get("suggested_fix") or "").strip()
+    if sev is None:
+        return None  # an explicit "none" / unrated dimension carries no finding
+    if not issue:
+        return None
+    return {"dimension": dim, "severity": sev, "issue": issue, "evidence": evidence, "suggested_fix": fix}
+
+
+def render_reviewer2_section(reviewer2: Optional[dict], bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Reviewer 2 (adversarial) section.
+
+    None when the pass did not run; a disclosed degradation note when it ran but
+    failed; otherwise a per-dimension breakdown. Only known fields are rendered,
+    so no accept/reject verdict or score can leak even if the model emits one.
+    """
+    cov = bundle.coverage
+    if reviewer2 is None:
+        if cov is not None and cov.reviewer2_degraded:
+            return (
+                "## Reviewer 2 (adversarial)\n\n_The adversarial Reviewer-2 pass could not be "
+                "generated this run (the model call failed after retries). The rest of the "
+                "review is unaffected — re-run to include it._\n"
+            )
+        return None
+
+    raw_findings = reviewer2.get("findings") if isinstance(reviewer2, dict) else None
+    coerced = [c for c in (_coerce_reviewer2_finding(f) for f in (raw_findings or [])) if c]
+    by_dim: dict[str, list[dict]] = {}
+    for f in coerced:
+        by_dim.setdefault(f["dimension"], []).append(f)
+
+    out: list[str] = ["## Reviewer 2 (adversarial)", ""]
+    out.append(
+        "A rubric-anchored adversarial pass that surfaces the objections a tough reviewer is "
+        "likely to raise, grouped by dimension and tagged by severity. It deliberately leads "
+        "with what is weak; it is **not** a verdict and carries no score. Treat each item as a "
+        "prompt to strengthen the paper before submission."
+    )
+    out.append("")
+    for key, heading in _REVIEWER2_DIMENSIONS:
+        group = sorted(by_dim.get(key, []), key=lambda f: _REVIEWER2_SEVERITY_ORDER[f["severity"]])
+        out.append(f"### {heading}")
+        out.append("")
+        if not group:
+            out.append("- _No issue found._")
+            out.append("")
+            continue
+        for f in group:
+            out.append(f"- **{f['severity']}** — {f['issue']}")
+            if f["evidence"]:
+                out.append(f"  > {f['evidence']}")
+            if f["suggested_fix"]:
+                out.append(f"  _Fix:_ {f['suggested_fix']}")
+        out.append("")
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # stitch
 
 
@@ -824,7 +1044,7 @@ def _format_rating(low, high, justification: str) -> str:
     return f"{scale}\n\n{justification.strip()}"
 
 
-def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
+def stitch_review(prose: dict, bundle: ReviewBundle, *, reviewer2: Optional[dict] = None) -> str:
     paper = bundle.paper
     summary = (prose.get("summary") or "_(no summary returned)_").strip()
     strengths = _bullets(prose.get("strengths") or [])
@@ -857,8 +1077,11 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
         strengths,
         "## Weaknesses",
         weaknesses,
-        render_citation_issues(bundle).strip(),
     ]
+    reviewer2_md = render_reviewer2_section(reviewer2, bundle)
+    if reviewer2_md is not None:
+        sections.append(reviewer2_md.strip())
+    sections.append(render_citation_issues(bundle).strip())
     hygiene = render_hygiene_section(bundle)
     if hygiene is not None:
         sections.append(hygiene.strip())
@@ -882,16 +1105,33 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
 # entry point
 
 
-async def synthesize_review(bundle: ReviewBundle, *, verbose: bool = False) -> str:
+async def synthesize_review(
+    bundle: ReviewBundle, *, verbose: bool = False, run_reviewer2: bool = True
+) -> str:
     _log(verbose, f"prose pass via {bundle.synthesis_model}")
     try:
         prose = await _generate_prose(bundle, verbose=verbose)
     except Exception as e:
-        # The prose pass is the only LLM step here. If it fails (after retries), keep the
+        # The prose pass is one of two LLM steps here. If it fails (after retries), keep the
         # deterministic sections — citation issues, hygiene, checklist, coverage,
         # methodology — rather than losing the whole review, and disclose the gap.
         _log(verbose, f"prose pass failed: {e!r}; writing deterministic sections only")
         if bundle.coverage is not None:
             bundle.coverage.synthesis_degraded = True
         prose = {}
-    return stitch_review(prose, bundle)
+
+    # The adversarial Reviewer-2 pass is a SEPARATE LLM call with its own failure
+    # boundary: a Reviewer-2 failure must not mislabel the prose/narrative sections
+    # as degraded (KTD-5 / U4), so it sets its own flag and never touches prose.
+    reviewer2: Optional[dict] = None
+    if run_reviewer2:
+        _log(verbose, f"reviewer-2 pass via {bundle.synthesis_model}")
+        try:
+            reviewer2 = await _generate_reviewer2(bundle, verbose=verbose)
+        except Exception as e:
+            _log(verbose, f"reviewer-2 pass failed: {e!r}; continuing without it")
+            if bundle.coverage is not None:
+                bundle.coverage.reviewer2_degraded = True
+            reviewer2 = None
+
+    return stitch_review(prose, bundle, reviewer2=reviewer2)

@@ -56,6 +56,7 @@ async def run_pipeline(
     authors: Optional[str] = None,
     venue: str = DEFAULT_VENUE,
     abstract_baseline: Optional[Path] = None,
+    run_reviewer2: bool = True,
     verbose: bool = False,
 ) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -181,7 +182,7 @@ async def run_pipeline(
     )
 
     _log(verbose, "Stage 4: synthesizing review")
-    markdown = await synthesize_review(bundle, verbose=verbose)
+    markdown = await synthesize_review(bundle, verbose=verbose, run_reviewer2=run_reviewer2)
 
     _log(verbose, f"Stage 5: writing {out}")
     bak = _backup_if_exists(out)

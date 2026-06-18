@@ -68,6 +68,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--no-reviewer2",
+        dest="run_reviewer2",
+        action="store_false",
+        help=(
+            "Skip the adversarial Reviewer-2 pass (one extra synthesis-model call). "
+            "Default: on."
+        ),
+    )
+    p.set_defaults(run_reviewer2=True)
+    p.add_argument(
         "--venue",
         default=DEFAULT_VENUE,
         choices=sorted(VENUE_RULES),
@@ -186,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
                     if args.abstract_baseline is not None
                     else None
                 ),
+                run_reviewer2=args.run_reviewer2,
                 verbose=args.verbose,
             )
         )

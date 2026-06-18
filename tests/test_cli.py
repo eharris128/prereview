@@ -70,6 +70,37 @@ def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
     assert captured["authors"] == "Smith"
 
 
+def test_parser_reviewer2_default_on():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.run_reviewer2 is True
+
+
+def test_parser_no_reviewer2_flag():
+    args = _build_parser().parse_args(["paper.tex", "--no-reviewer2"])
+    assert args.run_reviewer2 is False
+
+
+def test_main_threads_reviewer2_flag_to_pipeline(tmp_path: Path, monkeypatch):
+    from prereview import cli
+    from prereview.models import CoverageReport
+
+    captured = {}
+    out = tmp_path / "p.review.md"
+
+    async def fake_run(*a, **kw):
+        captured.update(kw)
+        out.write_text("# review\n")
+        return out, CoverageReport()
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    tex = tmp_path / "p.tex"
+    tex.write_text(r"\documentclass{article}")
+
+    main([str(tex), "--no-reviewer2"])
+    assert captured["run_reviewer2"] is False
+
+
 def test_parser_venue_gate_baseline_defaults():
     args = _build_parser().parse_args(["paper.tex"])
     assert args.venue == "aaai-27"

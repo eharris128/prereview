@@ -146,7 +146,7 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
 
     captured_bundle: dict = {}
 
-    async def fake_synth(bundle: ReviewBundle, *, verbose=False):
+    async def fake_synth(bundle: ReviewBundle, *, verbose=False, **_kw):
         captured_bundle["bundle"] = bundle
         # Mirror the real shape so structural assertions are meaningful.
         from prereview.synthesize import render_citation_issues, render_methodology
@@ -225,7 +225,7 @@ async def test_pipeline_backs_up_existing_review(tmp_path: Path, monkeypatch, fa
         async def verify(self, *a, **kw):
             raise AssertionError("verify should not be called for empty paper")
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         return "# new review\n"
 
     monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
@@ -309,7 +309,7 @@ async def test_pipeline_tex_mode_runs_checklist(tmp_path: Path, monkeypatch):
 
     captured: dict = {}
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         captured["bundle"] = bundle
         return "# review\n"
 
@@ -339,7 +339,7 @@ async def test_pipeline_no_checklist_flag_threads_through(tmp_path: Path, monkey
 
     captured: dict = {}
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         captured["bundle"] = bundle
         return "# review\n"
 
@@ -373,7 +373,7 @@ async def test_pipeline_pdf_mode_leaves_checklist_defaults(tmp_path: Path, monke
 
     captured: dict = {}
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         captured["bundle"] = bundle
         return "# review\n"
 
@@ -451,7 +451,7 @@ async def test_pipeline_reports_degraded_coverage(tmp_path: Path, monkeypatch):
                 verdict=verdict, rationale="r", abstract_only=True,
             )
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         return "# review\n"
 
     monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
@@ -488,7 +488,7 @@ Body text here with plenty of words so the section is not empty at all.
 """
     )
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         return "# review\n"
 
     monkeypatch.setattr(pipeline, "Resolver", _NoOpCtx)
@@ -511,7 +511,7 @@ async def test_pipeline_warns_loudly_on_zero_references(tmp_path: Path, monkeypa
     async def fake_ingest(pdf_path, *, model, verbose=False, **_kw):
         return IngestedPaper(title="t", references={}, citations=[])
 
-    async def fake_synth(bundle, *, verbose=False):
+    async def fake_synth(bundle, *, verbose=False, **_kw):
         return "# review\n"
 
     monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)

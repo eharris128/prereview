@@ -321,6 +321,11 @@ class CoverageReport(BaseModel):
     recovered_after_retry: int = 0  # transient calls that succeeded on a retry
     circuit_broken_sources: list[str] = Field(default_factory=list)  # sources stopped mid-run
     synthesis_degraded: bool = False  # prose pass failed; deterministic sections still written
+    # The adversarial Reviewer-2 pass (U4) is a *separate* LLM call from the prose
+    # pass. Its own failure flag, deliberately NOT reusing ``synthesis_degraded``:
+    # a Reviewer-2-only failure must not claim the narrative sections degraded, and
+    # it does not drive the exit-code-3 path.
+    reviewer2_degraded: bool = False
     # Hard desk-reject blockers for ``--gate`` (U3): residual-identity (U2) plus
     # blocker-severity submission findings. Populated every run; the CLI only acts
     # on it (exit code 4, which outranks the coverage-gap exit 3) when ``--gate``

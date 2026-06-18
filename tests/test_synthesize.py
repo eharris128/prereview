@@ -844,8 +844,141 @@ async def test_synthesize_review_survives_prose_failure(monkeypatch):
         raise RuntimeError("opus down")
 
     monkeypatch.setattr(syn, "_generate_prose", boom)
-    md = await syn.synthesize_review(bundle)
+    # run_reviewer2=False so this stays a pure prose-failure test (no real LLM call).
+    md = await syn.synthesize_review(bundle, run_reviewer2=False)
     assert "# Pre-submission review" in md
     assert "Methodology and limits" in md  # deterministic section survived
     assert bundle.coverage.synthesis_degraded is True
     assert "could not be generated" in md  # coverage section discloses the prose failure
+
+
+# ---------------------------------------------------------------------------
+# U4: adversarial Reviewer-2 pass
+
+
+def _reviewer2_payload():
+    return {
+        "findings": [
+            {"dimension": "novelty", "severity": "critical", "issue": "The contribution collapses into prior work.", "evidence": "Section 3 restates an earlier objective.", "suggested_fix": "Differentiate explicitly."},
+            {"dimension": "baselines", "severity": "major", "issue": "No SOTA baseline.", "evidence": "Table 2 omits the standard transformer baseline.", "suggested_fix": "Add the SOTA baseline."},
+            {"dimension": "claims", "severity": "minor", "issue": "Slightly over-strong wording.", "evidence": "'always outperforms' in the abstract.", "suggested_fix": "Qualify the claim."},
+            {"dimension": "reproducibility", "severity": "none", "issue": "no issue found", "evidence": "", "suggested_fix": ""},
+            # clarity intentionally omitted → renderer still shows it as "No issue found".
+        ]
+    }
+
+
+def test_render_reviewer2_groups_by_dimension_with_severity():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    md = syn.render_reviewer2_section(_reviewer2_payload(), bundle)
+    assert md is not None
+    assert "## Reviewer 2 (adversarial)" in md
+    for heading in (
+        "Novelty & positioning",
+        "Baselines & experiments",
+        "Claims vs. evidence",
+        "Reproducibility",
+        "Clarity",
+    ):
+        assert heading in md
+    assert "**critical**" in md
+    assert "**major**" in md
+    # Dimensions with severity "none" or omitted entirely both render "No issue found".
+    assert md.count("_No issue found._") >= 2  # reproducibility (none) + clarity (omitted)
+    assert "Table 2 omits the standard transformer baseline." in md  # evidence quoted
+
+
+def test_render_reviewer2_drops_verdict_and_score():
+    """The model tries to sneak in an accept verdict + score; neither may leak — this
+    is the anti-generosity guarantee (only known fields are rendered)."""
+    payload = {
+        "verdict": "accept",
+        "overall_score": 8,
+        "findings": [{"dimension": "novelty", "severity": "none", "issue": "no issue found"}],
+    }
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    md = syn.render_reviewer2_section(payload, bundle)
+    assert md is not None
+    low = md.lower()
+    assert "accept" not in low
+    assert "reject" not in low
+
+
+def test_render_reviewer2_none_when_not_run():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport()  # reviewer2_degraded is False
+    assert syn.render_reviewer2_section(None, bundle) is None
+
+
+def test_render_reviewer2_discloses_degradation():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport(reviewer2_degraded=True)
+    md = syn.render_reviewer2_section(None, bundle)
+    assert md is not None
+    assert "Reviewer 2" in md
+    assert "could not be generated" in md
+
+
+def test_reviewer2_prompt_carries_rubric_and_grounding():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="goodref")])
+    system = syn._REVIEWER2_SYSTEM
+    prompt = syn._reviewer2_prompt(bundle)
+    # Rubric anchors live in the system prompt (the anti-generosity mechanism).
+    assert "critical:" in system.lower()
+    assert "do not default" in system.lower()
+    assert "sota baseline" in system.lower()
+    assert "accept/reject" in system.lower()  # the no-verdict rule
+    # Novelty grounding: the paper's own cited title reaches the prompt.
+    assert "A Toy Paper" in prompt
+    for dim in ("novelty", "baselines", "claims", "reproducibility", "clarity"):
+        assert dim in prompt
+
+
+def test_reviewer2_flag_summary_reaches_prompt_for_calibration():
+    """A deterministic signal (submission findings) must reach the prompt so the model
+    can calibrate severity against the tool's own flags."""
+    paper = IngestedPaper(
+        title="A Paper", abstract="x", sections=[("body", "b")],
+        references={}, citations=[],
+        submission_checked=True,
+        submission_findings=[
+            SubmissionFinding(kind=SubmissionFindingKind.OVER_LENGTH, severity=SubmissionSeverity.WARNING, detail="over length"),
+        ],
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    prompt = syn._reviewer2_prompt(bundle)
+    assert "submission-readiness issue" in prompt.lower()
+
+
+def test_stitch_places_reviewer2_after_weaknesses_before_citations():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    md = syn.stitch_review({"summary": "s"}, bundle, reviewer2=_reviewer2_payload())
+    assert "## Reviewer 2 (adversarial)" in md
+    assert md.index("## Weaknesses") < md.index("## Reviewer 2 (adversarial)")
+    assert md.index("## Reviewer 2 (adversarial)") < md.index("## Citation issues")
+
+
+@pytest.mark.asyncio
+async def test_reviewer2_failure_does_not_mislabel_prose(monkeypatch):
+    """A Reviewer-2-only failure sets reviewer2_degraded, NOT synthesis_degraded, and
+    must not print the prose/narrative-degradation message."""
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport()
+
+    async def good_prose(bundle, *, verbose=False):
+        return {
+            "summary": "ok", "strengths": ["s"], "weaknesses": ["w"], "questions": ["q"],
+            "rating_low": 5, "rating_high": 6, "rating_justification": "LLM judgement.",
+        }
+
+    async def boom_reviewer2(bundle, *, verbose=False):
+        raise RuntimeError("opus down")
+
+    monkeypatch.setattr(syn, "_generate_prose", good_prose)
+    monkeypatch.setattr(syn, "_generate_reviewer2", boom_reviewer2)
+    md = await syn.synthesize_review(bundle)
+
+    assert bundle.coverage.reviewer2_degraded is True
+    assert bundle.coverage.synthesis_degraded is False
+    assert "Reviewer 2" in md and "could not be generated" in md
+    assert "narrative sections" not in md  # the prose sections are NOT mislabeled
