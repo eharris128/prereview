@@ -190,6 +190,18 @@ class IngestedPaper(BaseModel):
     # distinguishes "no checklist" from "checklist clean" for the renderer.
     checklist_found: bool = False
     checklist_findings: list[ChecklistFinding] = Field(default_factory=list)
+    # Manuscript-structure signals the desk-reject guards need (U1). The TeX path
+    # populates the source-level fields (``author_block``/``acknowledgments``/
+    # ``section_titles``); the PDF path populates the layout fields
+    # (``page_count``/``references_start_page``). Each path leaves the other's
+    # fields at their back-compat defaults, so neither disturbs the existing
+    # citation/checklist flow. ``references_start_page`` is 1-based and stays
+    # ``None`` when the boundary cannot be isolated (never a guess).
+    author_block: Optional[str] = None
+    acknowledgments: Optional[str] = None
+    section_titles: list[str] = Field(default_factory=list)
+    page_count: Optional[int] = None
+    references_start_page: Optional[int] = None
 
 
 class VerificationResult(BaseModel):

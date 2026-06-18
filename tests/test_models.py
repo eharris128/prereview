@@ -60,6 +60,33 @@ def test_ingested_paper_defaults_checklist_fields():
     assert paper.checklist_findings == []
 
 
+def test_ingested_paper_defaults_structure_fields():
+    """U1 fields must be back-compat: a bare IngestedPaper (the PDF path, or any
+    existing construction site) leaves them all unset, never crashing."""
+    paper = IngestedPaper()
+    assert paper.author_block is None
+    assert paper.acknowledgments is None
+    assert paper.section_titles == []
+    assert paper.page_count is None
+    assert paper.references_start_page is None
+
+
+def test_ingested_paper_structure_fields_round_trip():
+    paper = IngestedPaper(
+        author_block="Jane Smith",
+        acknowledgments="We thank the lab.",
+        section_titles=["Introduction", "Method"],
+        page_count=9,
+        references_start_page=7,
+    )
+    restored = IngestedPaper(**paper.model_dump())
+    assert restored.author_block == "Jane Smith"
+    assert restored.acknowledgments == "We thank the lab."
+    assert restored.section_titles == ["Introduction", "Method"]
+    assert restored.page_count == 9
+    assert restored.references_start_page == 7
+
+
 # ---------------------------------------------------------------------------
 # Robustness models (recover-then-disclose): Resolution / Verdict / CoverageReport
 

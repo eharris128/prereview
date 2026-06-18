@@ -37,8 +37,16 @@ def _log(verbose: bool, msg: str) -> None:
 # text extraction
 
 
-def extract_text(pdf_path: Path) -> str:
-    """Best-effort text extraction. Unwrap line-break hyphens and collapse newlines."""
+def page_texts(pdf_path: Path) -> list[str]:
+    """Per-page text extraction, **preserving page boundaries**.
+
+    The single-string :func:`extract_text` flattens these with ``"\\n".join`` and
+    is therefore unable to answer "which page does the bibliography start on?".
+    The desk-reject length guard (U1/U3) needs that, so the per-page list is the
+    primary extractor and :func:`extract_text` is derived from it. Each element is
+    one page's raw extracted text (``""`` for a page pypdf cannot read), so the
+    returned list length is always the page count.
+    """
     import logging as _logging
 
     from pypdf import PdfReader
@@ -56,12 +64,40 @@ def extract_text(pdf_path: Path) -> str:
                 pages.append("")
     finally:
         pypdf_logger.setLevel(prev_level)
-    text = "\n".join(pages)
+    return pages
+
+
+def _clean_extracted(text: str) -> str:
     # Join words split by line-break hyphens: "neural- \nnetwork" → "neuralnetwork".
     text = re.sub(r"-\s*\n\s*(\w)", r"\1", text)
     # Collapse multiple blank lines but keep paragraph breaks.
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text
+
+
+def extract_text(pdf_path: Path) -> str:
+    """Best-effort text extraction. Unwrap line-break hyphens and collapse newlines.
+
+    Delegates to :func:`page_texts` and joins, preserving the historical
+    single-string contract the citation path depends on.
+    """
+    return _clean_extracted("\n".join(page_texts(pdf_path)))
+
+
+def find_references_start_page(pages: list[str]) -> Optional[int]:
+    """1-based page number of the first page bearing a standalone references
+    heading, or ``None`` when no page does (the boundary is not isolable).
+
+    Deliberately conservative: it reuses the same high-precision header regex as
+    :func:`split_at_references` (a "References"/"Bibliography" line essentially
+    alone on its line), and returns ``None`` rather than guessing when no page
+    matches — a two-column PDF whose references start mid-page will simply not
+    isolate, which the length guard reports as a warning, never a hard block.
+    """
+    for idx, page in enumerate(pages, start=1):
+        if _REFS_HEADERS.search(page):
+            return idx
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +379,8 @@ async def ingest_pdf(
     model: str,
     verbose: bool = False,
 ) -> IngestedPaper:
-    text = extract_text(pdf_path)
+    pages = page_texts(pdf_path)
+    text = _clean_extracted("\n".join(pages))
     if not text.strip():
         raise RuntimeError(f"could not extract any text from {pdf_path}")
 
@@ -359,4 +396,6 @@ async def ingest_pdf(
         sections=[("body", body)],
         references=references,
         citations=citations,
+        page_count=len(pages),
+        references_start_page=find_references_start_page(pages),
     )

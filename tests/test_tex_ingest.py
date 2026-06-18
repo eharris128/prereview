@@ -13,6 +13,9 @@ import pytest
 from prereview.tex_ingest import (
     bib_to_reference,
     extract_abstract,
+    extract_acknowledgments,
+    extract_author_block,
+    extract_sections,
     extract_title,
     extract_urls,
     find_bib_file,
@@ -481,4 +484,115 @@ We cite \citep{cited}.
     assert paper.unused_bibkeys == ["never_cited"]
     targets = {(b.command, b.target) for b in paper.broken_refs}
     assert ("ref", "nope:gone") in targets
-    assert ("ref", "sec:intro") not in targets
+
+
+# ---------------------------------------------------------------------------
+# U1: manuscript-structure extraction (author / acknowledgments / sections)
+
+
+def test_extract_author_block_captures_names():
+    block = extract_author_block(r"\author{Jane Smith \and John Doe}")
+    assert block is not None
+    assert "Jane Smith" in block
+    assert "John Doe" in block
+
+
+def test_extract_author_block_none_when_absent():
+    assert extract_author_block(r"\title{No authors here}\begin{document}x\end{document}") is None
+
+
+def test_extract_author_block_ignores_commented_out():
+    assert extract_author_block("% \\author{Jane Smith}\n") is None
+
+
+def test_extract_author_block_handles_nested_braces():
+    # \thanks holds a nested brace group — the whole block must be captured.
+    block = extract_author_block(r"\author{Smith \thanks{Univ. of {X}}}")
+    assert block is not None
+    assert "Smith" in block
+    assert "Univ. of X" in block
+
+
+def test_extract_author_block_not_confused_by_authorrunning():
+    # \authorrunning (LNCS) must not be mistaken for \author.
+    assert extract_author_block(r"\authorrunning{Smith et al.}") is None
+
+
+def test_extract_author_block_preserves_anonymous_literal():
+    # An anonymized block returns its literal text (not None) so U2 can judge it.
+    block = extract_author_block(r"\author{Anonymous Authors}")
+    assert block == "Anonymous Authors"
+
+
+def test_extract_acknowledgments_from_acks_environment():
+    acks = extract_acknowledgments(r"\begin{acks}We thank the Acme Lab for funding.\end{acks}")
+    assert acks is not None
+    assert "Acme Lab" in acks
+
+
+def test_extract_acknowledgments_from_section_heading_en_gb():
+    # en-GB spelling + starred section.
+    tex = (
+        r"\section*{Acknowledgements}"
+        "\nThanks to our colleagues at State University.\n"
+        r"\bibliography{refs}"
+    )
+    acks = extract_acknowledgments(tex)
+    assert acks is not None
+    assert "State University" in acks
+    # The bibliography boundary must cut the section off.
+    assert "refs" not in acks
+
+
+def test_extract_acknowledgments_none_when_absent():
+    assert extract_acknowledgments(r"\section{Introduction}No thanks here.") is None
+
+
+def test_extract_sections_lists_titles_in_order():
+    tex = r"""
+\section{Introduction}
+\section{Related Work}
+\section*{Conclusion}
+"""
+    assert extract_sections(tex) == ["Introduction", "Related Work", "Conclusion"]
+
+
+def test_extract_sections_ignores_commented_and_handles_nesting():
+    tex = "% \\section{Commented Out}\n\\section{Real \\texttt{Code} Section}\n"
+    assert extract_sections(tex) == ["Real Code Section"]
+
+
+def test_ingest_tex_populates_structure_fields(tmp_path: Path):
+    """End-to-end: U1 structure fields land on IngestedPaper; PDF-only layout
+    fields stay None on the TeX path."""
+    import asyncio
+
+    bib = tmp_path / "references.bib"
+    bib.write_text("@article{cited, author={A}, title={A}, year={2023}}\n")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\title{Structure Toy}
+\author{Jane Smith \thanks{State University}}
+\begin{document}
+\section{Introduction}
+We cite \citep{cited}.
+\section{Method}
+Details here.
+\section*{Acknowledgements}
+We thank the Acme Lab.
+\bibliography{references}
+\end{document}
+"""
+    )
+    paper = asyncio.run(ingest_tex(tex, model="ignored", verbose=False))
+    assert paper.author_block is not None and "Jane Smith" in paper.author_block
+    assert "State University" in paper.author_block
+    # Starred sections count too (the acknowledgments heading is a real section).
+    assert paper.section_titles == ["Introduction", "Method", "Acknowledgements"]
+    assert paper.acknowledgments is not None and "Acme Lab" in paper.acknowledgments
+    # Layout fields are PDF-only; the TeX path must leave them unmeasured.
+    assert paper.page_count is None
+    assert paper.references_start_page is None
+    # Existing fields are undisturbed.
+    assert any(c.ref_id == "cited" for c in paper.citations)

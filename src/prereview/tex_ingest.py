@@ -399,6 +399,123 @@ def extract_abstract(text: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# manuscript structure: author / acknowledgments / sections (U1)
+#
+# These feed the deterministic desk-reject guards (U2 anonymization, U3
+# submission-readiness). All three strip comments first so a commented-out
+# ``% \author{...}`` cannot false-positive, and all three are brace-aware so a
+# nested ``\thanks{Univ. of {X}}`` is captured whole.
+
+
+def _strip_tex_comments(text: str) -> str:
+    """Drop ``% ...`` line comments (but not escaped ``\\%``), like checklist.py."""
+    return re.sub(r"(?<!\\)%[^\n]*", "", text)
+
+
+def _read_balanced(text: str, i: int) -> tuple[str, int]:
+    """Given ``text[i] == '{'``, return ``(inner, index_after_close)``, brace-aware.
+
+    Tolerates nested ``{...}`` so an ``\\author`` block holding
+    ``\\thanks{Univ. of {X}}`` is not truncated. An unterminated brace returns
+    everything to end-of-string rather than raising.
+    """
+    depth = 1
+    i += 1
+    start = i
+    n = len(text)
+    while i < n and depth > 0:
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        if depth > 0:
+            i += 1
+    return text[start:i], i + 1
+
+
+def _flatten_tex(s: str) -> str:
+    """Reduce a TeX fragment to readable text, **keeping the argument** of one-arg
+    commands (so ``\\thanks{a@b.edu}`` retains its identity-bearing content) while
+    dropping command names and stray braces. Mirrors :func:`extract_title`'s
+    cleanup, reused for author/ack/section text."""
+    for _ in range(4):
+        s = re.sub(r"\\(?:textbf|textit|emph|texttt|textsc|textrm|textsf)\{([^{}]*)\}", r"\1", s)
+    for _ in range(4):
+        s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}", r"\1", s)
+    s = re.sub(r"\\[a-zA-Z]+\*?", " ", s)
+    s = s.replace("{", "").replace("}", "").replace("~", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# ``\author`` but not ``\authors``/``\authorrunning`` (\b after the word).
+_AUTHOR_RE = re.compile(r"\\author\b\s*\*?\s*(?:\[[^\]]*\])?\s*")
+_ACKS_ENV_RE = re.compile(
+    r"\\begin\s*\{(acks|acknowledgements?|acknowledgments?)\}(.*?)\\end\s*\{\1\}",
+    re.DOTALL | re.IGNORECASE,
+)
+_ACKS_HEADING_RE = re.compile(
+    r"\\(?:section|subsection|paragraph)\*?\s*\{\s*acknowledge?ments?\s*\}",
+    re.IGNORECASE,
+)
+# Where an acknowledgments *section* (vs environment) ends: the next sectioning
+# command or the bibliography / end of document.
+_SECTION_BOUNDARY_RE = re.compile(
+    r"\\(?:section|subsection|chapter|paragraph)\b"
+    r"|\\(?:bibliography|printbibliography)\b"
+    r"|\\begin\s*\{thebibliography\}"
+    r"|\\end\s*\{document\}",
+    re.IGNORECASE,
+)
+_SECTION_TITLE_RE = re.compile(r"\\section\*?\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
+
+
+def extract_author_block(text: str) -> Optional[str]:
+    """Flattened content of the manuscript's ``\\author{...}`` block, or ``None``.
+
+    Returns ``None`` when there is no ``\\author`` (anonymized submissions often
+    have a blank or ``Anonymous`` one — that returns the literal text so U2 can
+    judge it, not ``None``)."""
+    text = _strip_tex_comments(text)
+    m = _AUTHOR_RE.search(text)
+    if not m:
+        return None
+    k = m.end()
+    if k >= len(text) or text[k] != "{":
+        return None
+    inner, _ = _read_balanced(text, k)
+    return _flatten_tex(inner) or None
+
+
+def extract_acknowledgments(text: str) -> Optional[str]:
+    """Flattened acknowledgments text, from either an ``\\begin{acks}`` /
+    ``\\begin{acknowledgements}`` environment or a ``\\section*{Acknowledgements}``
+    heading (US/UK spelling), or ``None`` when absent."""
+    text = _strip_tex_comments(text)
+    m = _ACKS_ENV_RE.search(text)
+    if m:
+        return _flatten_tex(m.group(2)) or None
+    m = _ACKS_HEADING_RE.search(text)
+    if not m:
+        return None
+    rest = text[m.end():]
+    nxt = _SECTION_BOUNDARY_RE.search(rest)
+    body = rest[: nxt.start()] if nxt else rest
+    return _flatten_tex(body) or None
+
+
+def extract_sections(text: str) -> list[str]:
+    """Ordered list of top-level ``\\section{...}`` titles (numbered and starred)."""
+    text = _strip_tex_comments(text)
+    out: list[str] = []
+    for m in _SECTION_TITLE_RE.finditer(text):
+        title = _flatten_tex(m.group(1))
+        if title:
+            out.append(title)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # bib file discovery
 
 
@@ -615,6 +732,9 @@ async def ingest_tex(
     tex_text = tex_path.read_text(encoding="utf-8", errors="replace")
     title = extract_title(tex_text)
     abstract = extract_abstract(tex_text)
+    author_block = extract_author_block(tex_text)
+    acknowledgments = extract_acknowledgments(tex_text)
+    section_titles = extract_sections(tex_text)
 
     if bib_path is None:
         bib_path = find_bib_file(tex_path, tex_text)
@@ -684,4 +804,7 @@ async def ingest_tex(
         link_checks=link_checks,
         checklist_found=checklist_found,
         checklist_findings=checklist_findings,
+        author_block=author_block,
+        acknowledgments=acknowledgments,
+        section_titles=section_titles,
     )
