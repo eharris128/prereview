@@ -79,6 +79,9 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
     monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
 
     class FakeResolver:
+        recovered_after_retry = 0
+        circuit_broken_sources: list = []
+
         def __init__(self, **kw):
             pass
 
@@ -163,7 +166,7 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
     monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
 
     out = tmp_path / "draft.review.md"
-    result = await pipeline.run_pipeline(
+    out_path, report = await pipeline.run_pipeline(
         pdf,
         out=out,
         model="anthropic/claude-sonnet-4-6",
@@ -173,8 +176,15 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
         verbose=False,
     )
 
-    assert result == out
+    assert out_path == out
     assert out.exists()
+
+    # run_pipeline now returns a CoverageReport: ref "3" is a genuine ghost (UNRESOLVED),
+    # not an infrastructure gap, so coverage is "clean" (no gap → exit 0).
+    assert report.references_parsed == 3
+    assert report.ghost_unresolved == 1
+    assert report.resolution_degraded == 0 and report.verification_degraded == 0
+    assert report.has_coverage_gap is False
 
     bundle = captured_bundle["bundle"]
     assert bundle.unresolved_count == 1
@@ -200,6 +210,9 @@ async def test_pipeline_backs_up_existing_review(tmp_path: Path, monkeypatch, fa
         return IngestedPaper(title="t", references={}, citations=[])
 
     class _NoOpCtx:
+        recovered_after_retry = 0
+        circuit_broken_sources: list = []
+
         async def __aenter__(self):
             return self
 
@@ -240,6 +253,9 @@ async def test_pipeline_backs_up_existing_review(tmp_path: Path, monkeypatch, fa
 
 
 class _NoOpCtx:
+    recovered_after_retry = 0
+    circuit_broken_sources: list = []
+
     def __init__(self, **kw):
         pass
 
@@ -376,3 +392,106 @@ async def test_pipeline_pdf_mode_leaves_checklist_defaults(tmp_path: Path, monke
     )
 
     assert captured["bundle"].paper.checklist_found is False
+
+
+# ---------------------------------------------------------------------------
+# coverage aggregation + zero-citation warning (U8)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reports_degraded_coverage(tmp_path: Path, monkeypatch):
+    """A reference that resolves DEGRADED (transient infra failure) is a coverage gap,
+    not a ghost: the CoverageReport shows resolution_degraded == 1, ghost == 0, and a
+    gap — plus the resolver's recovered/circuit-broken stats."""
+    paper = IngestedPaper(
+        title="t",
+        abstract="a",
+        sections=[("body", "x [1].")],
+        references={"1": _ref("1")},
+        citations=[Citation(ref_id="1", sentence="x [1].")],
+    )
+
+    async def fake_ingest(pdf_path, *, model, verbose=False):
+        return paper
+
+    class FakeResolver:
+        recovered_after_retry = 2
+        circuit_broken_sources = ["semanticscholar"]
+
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def resolve(self, ref):
+            return Resolution(status=ResolutionStatus.DEGRADED)
+
+    class FakeVerifier:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def verify(self, cit, ref, resolution, *, model, fetch_cited, verbose):
+            verdict = (
+                Verdict.VERIFICATION_UNAVAILABLE
+                if resolution.status == ResolutionStatus.DEGRADED
+                else Verdict.SUPPORTS
+            )
+            return VerificationResult(
+                ref_id=ref.ref_id, citation=cit, reference=ref, canonical=None,
+                verdict=verdict, rationale="r", abstract_only=True,
+            )
+
+    async def fake_synth(bundle, *, verbose=False):
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
+    monkeypatch.setattr(pipeline, "Resolver", FakeResolver)
+    monkeypatch.setattr(pipeline, "Verifier", FakeVerifier)
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    pdf = tmp_path / "p.pdf"
+    pdf.write_text("x")
+    _, report = await pipeline.run_pipeline(
+        pdf, out=tmp_path / "p.review.md", model="m", synthesis_model="s",
+        fetch_cited=False, cache_dir=tmp_path / "cache",
+    )
+    assert report.resolution_degraded == 1
+    assert report.ghost_unresolved == 0
+    assert report.has_coverage_gap is True
+    assert report.recovered_after_retry == 2
+    assert report.circuit_broken_sources == ["semanticscholar"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_warns_loudly_on_zero_references(tmp_path: Path, monkeypatch, capsys):
+    """Zero parsed references emits a loud stderr warning even without --verbose, so a
+    silent-empty extraction never looks like a clean run."""
+
+    async def fake_ingest(pdf_path, *, model, verbose=False):
+        return IngestedPaper(title="t", references={}, citations=[])
+
+    async def fake_synth(bundle, *, verbose=False):
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
+    monkeypatch.setattr(pipeline, "Resolver", lambda **kw: _NoOpCtx())
+    monkeypatch.setattr(pipeline, "Verifier", lambda **kw: _NoOpCtx())
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    pdf = tmp_path / "p.pdf"
+    pdf.write_text("x")
+    await pipeline.run_pipeline(
+        pdf, out=tmp_path / "p.review.md", model="m", synthesis_model="s",
+        fetch_cited=False, cache_dir=tmp_path / "cache", verbose=False,
+    )
+    assert "no bibliography entries" in capsys.readouterr().err

@@ -11,7 +11,14 @@ from typing import Optional
 from .cache import Cache
 from .ingest import ingest_pdf
 from .link_health import check_links
-from .models import Resolution, ReviewBundle, VerificationResult, Verdict
+from .models import (
+    CoverageReport,
+    Resolution,
+    ResolutionStatus,
+    ReviewBundle,
+    VerificationResult,
+    Verdict,
+)
 from .resolve import Resolver
 from .synthesize import synthesize_review
 from .tex_ingest import ingest_tex
@@ -45,7 +52,7 @@ async def run_pipeline(
     checklist_path: Optional[Path] = None,
     run_checklist: bool = True,
     verbose: bool = False,
-) -> Path:
+) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
     s2_key = os.environ.get("S2_API_KEY")
     openalex_key = os.environ.get("OPENALEX_API_KEY")
@@ -65,6 +72,20 @@ async def run_pipeline(
         _log(verbose, f"Stage 1: ingesting (pdf mode) {pdf_path}")
         paper = await ingest_pdf(pdf_path, model=model, verbose=verbose)
     _log(verbose, f"  parsed {len(paper.references)} references, {len(paper.citations)} in-text citations")
+    if not paper.references:
+        print(
+            "prereview: warning — no bibliography entries were parsed from the input; "
+            "the review will contain no citation checks.",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif not paper.citations:
+        print(
+            "prereview: warning — bibliography entries parsed but no in-text citations "
+            "were found; there is nothing to verify.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     if paper.link_checks:
         _log(verbose, f"Stage 1.5: probing {len(paper.link_checks)} URLs for reachability")
@@ -112,7 +133,31 @@ async def run_pipeline(
     fetched_full_text_count = sum(
         1 for v in verifications if not v.abstract_only and v.verdict != Verdict.TARGET_UNAVAILABLE
     )
-    unresolved_count = sum(1 for res in canonical_by_ref.values() if res.record is None)
+
+    # Coverage integrity: partition each citation's outcome so the review can disclose
+    # what it could and couldn't check, and the CLI can pick an honest exit code.
+    resolution_degraded = verification_degraded = ghost = resolved = 0
+    for v in verifications:
+        res = canonical_by_ref.get(v.ref_id)
+        if res is not None and res.status == ResolutionStatus.DEGRADED:
+            resolution_degraded += 1
+        elif v.verdict == Verdict.VERIFICATION_UNAVAILABLE:
+            verification_degraded += 1  # resolved record, but the verify call failed after retries
+        elif v.verdict == Verdict.TARGET_UNAVAILABLE:
+            ghost += 1
+        else:
+            resolved += 1
+
+    coverage = CoverageReport(
+        references_parsed=len(paper.references),
+        citations_checked=len(verifications),
+        resolved=resolved,
+        ghost_unresolved=ghost,
+        resolution_degraded=resolution_degraded,
+        verification_degraded=verification_degraded,
+        recovered_after_retry=resolver.recovered_after_retry,
+        circuit_broken_sources=resolver.circuit_broken_sources,
+    )
 
     bundle = ReviewBundle(
         paper=paper,
@@ -121,7 +166,8 @@ async def run_pipeline(
         synthesis_model=synthesis_model,
         fetched_full_text_count=fetched_full_text_count,
         abstract_only_count=abstract_only_count,
-        unresolved_count=unresolved_count,
+        unresolved_count=ghost,  # true ghosts only; coverage is the authoritative report
+        coverage=coverage,
     )
 
     _log(verbose, "Stage 4: synthesizing review")
@@ -132,4 +178,4 @@ async def run_pipeline(
     if bak is not None:
         _log(verbose, f"  backed up previous review to {bak}")
     out.write_text(markdown)
-    return out
+    return out, bundle.coverage

@@ -51,3 +51,57 @@ def test_openalex_api_key_autoloaded_from_env(tmp_path: Path, monkeypatch):
     _autoload_env(inp)
     assert os.environ.get("OPENALEX_API_KEY") == "oa-secret"
     monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+
+
+# ---------------------------------------------------------------------------
+# exit-code semantics + clean error surface (U8)
+
+
+def _stub_run_pipeline(monkeypatch, tmp_path, *, report=None, raises=None):
+    """Replace cli.run_pipeline so main() can be exercised without network/LLM."""
+    from prereview import cli
+
+    out = tmp_path / "p.review.md"
+
+    async def fake_run(*a, **kw):
+        if raises is not None:
+            raise raises
+        out.write_text("# review\n")
+        return out, report
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    tex = tmp_path / "p.tex"
+    tex.write_text(r"\documentclass{article}")
+    return tex
+
+
+def test_cli_exit_0_on_clean_coverage(tmp_path: Path, monkeypatch):
+    from prereview.models import CoverageReport
+
+    tex = _stub_run_pipeline(
+        monkeypatch, tmp_path, report=CoverageReport(references_parsed=2, citations_checked=2, resolved=2)
+    )
+    assert main([str(tex)]) == 0
+
+
+def test_cli_exit_3_on_coverage_gap(tmp_path: Path, monkeypatch, capsys):
+    """A non-recoverable coverage gap exits 3 (scriptable) and explains itself; honest
+    verdicts would still exit 0."""
+    from prereview.models import CoverageReport
+
+    tex = _stub_run_pipeline(
+        monkeypatch, tmp_path, report=CoverageReport(citations_checked=1, verification_degraded=1)
+    )
+    assert main([str(tex)]) == 3
+    assert "coverage gaps" in capsys.readouterr().err
+
+
+def test_cli_exit_1_clean_message_no_traceback(tmp_path: Path, monkeypatch, capsys):
+    """An unexpected pipeline error surfaces as a clean one-line message and exit 1 — no
+    raw Python traceback."""
+    tex = _stub_run_pipeline(monkeypatch, tmp_path, raises=RuntimeError("kaboom"))
+    assert main([str(tex)]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "prereview: failed" in err and "kaboom" in err

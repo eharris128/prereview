@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
-        asyncio.run(
+        out_path, report = asyncio.run(
             run_pipeline(
                 pdf_path,
                 out=out,
@@ -143,8 +143,34 @@ def main(argv: list[str] | None = None) -> int:
     except NotImplementedError as e:
         print(f"prereview: not yet implemented — {e}", file=sys.stderr)
         return 2
+    except Exception as e:
+        # Clean, actionable message instead of a raw traceback — the review either was
+        # not written or is incomplete. Run with --verbose for the per-stage log.
+        print(f"prereview: failed — {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
 
-    print(str(out))
+    print(str(out_path))
+
+    # The exit code communicates coverage integrity: 0 = ran clean and complete; 3 = ran
+    # but at least one citation could not be checked (infrastructure) or the prose pass
+    # degraded — an honest, scriptable signal that the review discloses gaps. Honest
+    # verdicts (does-not-support, abstract-too-thin, genuine ghosts) still exit 0.
+    if report is not None and (report.has_coverage_gap or report.synthesis_degraded):
+        n = report.resolution_degraded + report.verification_degraded
+        parts: list[str] = []
+        if n:
+            parts.append(f"{n} citation{'' if n == 1 else 's'} could not be verified (infrastructure)")
+        if report.circuit_broken_sources:
+            parts.append("sources stopped mid-run: " + ", ".join(report.circuit_broken_sources))
+        if report.synthesis_degraded:
+            parts.append("narrative sections degraded")
+        print(
+            "prereview: completed with coverage gaps — "
+            + "; ".join(parts)
+            + ". See 'Review coverage & reliability' in the output.",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

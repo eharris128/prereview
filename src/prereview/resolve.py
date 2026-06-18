@@ -193,6 +193,11 @@ class Resolver:
     async def aclose(self) -> None:
         await self.client.aclose()
 
+    @property
+    def circuit_broken_sources(self) -> list[str]:
+        """Sources whose circuit breaker tripped this run (stopped being queried)."""
+        return sorted(self._tripped)
+
     # ----- internals -------------------------------------------------------
 
     def _record_transient(self, source: str, retries: int) -> None:
