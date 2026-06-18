@@ -23,6 +23,7 @@ from .models import (
     ChecklistFindingKind,
     CitationRole,
     ReviewBundle,
+    SubmissionSeverity,
     VerificationResult,
     Verdict,
 )
@@ -524,6 +525,52 @@ def render_anonymization_section(bundle: ReviewBundle) -> Optional[str]:
     return "\n".join(out)
 
 
+def render_submission_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Submission readiness (desk-reject guard) section, or None
+    when the guard did not run.
+
+    Like the anonymization audit, this is a desk-reject guard that renders even on
+    a clean run (a positive "you won't be desk-rejected for these" confirmation is
+    the headline value). Blockers and warnings are shown separately; everything is
+    advisory unless ``--gate`` is passed.
+    """
+    paper = bundle.paper
+    if not paper.submission_checked:
+        return None
+
+    findings = paper.submission_findings
+    out: list[str] = ["## Submission readiness (desk-reject guard)", ""]
+    if not findings:
+        out.append(
+            "No over-length, placeholder/empty title or abstract, color-coded result "
+            "table, or unanswered mandatory checklist items were detected for this venue "
+            "(length is measured on PDF input only). Still verify against the official "
+            "author kit before submitting."
+        )
+        out.append("")
+        return "\n".join(out)
+
+    out.append(
+        "Mechanical checks against the venue's submission rules. **Blockers** are "
+        "desk-reject-eligible; **warnings** are approximate and worth a manual look. "
+        "All are advisory unless you pass `--gate`."
+    )
+    out.append("")
+    blockers = [f for f in findings if f.severity == SubmissionSeverity.BLOCKER]
+    warnings = [f for f in findings if f.severity == SubmissionSeverity.WARNING]
+    for label, group in (("Blockers", blockers), ("Warnings", warnings)):
+        if not group:
+            continue
+        out.append(f"### {label} ({len(group)})")
+        out.append("")
+        for f in group:
+            out.append(f"- {f.detail}")
+            if f.evidence:
+                out.append(f"  > {f.evidence}")
+        out.append("")
+    return "\n".join(out)
+
+
 def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     """Coverage & reliability — the trust signal. Renders only when there is an
     infrastructure outcome to disclose (degradation, recovery, a tripped source, or a
@@ -611,6 +658,14 @@ def render_methodology(bundle: ReviewBundle) -> str:
     if bundle.paper.checklist_found:
         # 4-space indent + blank line so it dedents uniformly with the template below.
         hygiene_line += "\n\n    " + _checklist_methodology_sentence(bundle)
+    if bundle.paper.submission_checked:
+        n_sub = len(bundle.paper.submission_findings)
+        hygiene_line += "\n\n    " + (
+            f"Submission-readiness checks ran against the venue rules: {n_sub} issue(s) flagged "
+            "(length, placeholder/abstract-diff, color tables, checklist completeness)."
+            if n_sub
+            else "Submission-readiness checks ran against the venue rules: no desk-reject issues flagged."
+        )
     return textwrap.dedent(f"""
     ## Methodology and limits of this review
 
@@ -792,6 +847,9 @@ def stitch_review(prose: dict, bundle: ReviewBundle) -> str:
     anonymization = render_anonymization_section(bundle)
     if anonymization is not None:
         sections.append(anonymization.strip())
+    submission = render_submission_section(bundle)
+    if submission is not None:
+        sections.append(submission.strip())
     sections += [
         "## Summary",
         summary,

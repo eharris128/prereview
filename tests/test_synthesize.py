@@ -23,6 +23,9 @@ from prereview.models import (
     LinkCheck,
     Reference,
     ReviewBundle,
+    SubmissionFinding,
+    SubmissionFindingKind,
+    SubmissionSeverity,
     VerificationResult,
     Verdict,
 )
@@ -637,6 +640,63 @@ def test_stitch_omits_anonymization_section_when_not_checked():
     bundle = _anon_bundle(checked=False)
     md = syn.stitch_review({"summary": "s"}, bundle)
     assert "## Anonymization audit" not in md
+
+
+# ---------------------------------------------------------------------------
+# U3: submission-readiness rendering
+
+
+def _submission_bundle(*, checked: bool, findings=None) -> ReviewBundle:
+    paper = IngestedPaper(
+        title="A Paper",
+        references={},
+        citations=[],
+        submission_checked=checked,
+        submission_findings=findings or [],
+    )
+    return ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+
+
+def _submission_findings():
+    K = SubmissionFindingKind
+    S = SubmissionSeverity
+    return [
+        SubmissionFinding(kind=K.PLACEHOLDER_TITLE, severity=S.BLOCKER, detail="the title is empty — verify"),
+        SubmissionFinding(kind=K.OVER_LENGTH, severity=S.WARNING, detail="approximately 9 pages — verify against the compiled PDF"),
+    ]
+
+
+def test_render_submission_none_when_not_checked():
+    assert syn.render_submission_section(_submission_bundle(checked=False)) is None
+
+
+def test_render_submission_clean_confirmation_when_checked_empty():
+    md = syn.render_submission_section(_submission_bundle(checked=True, findings=[]))
+    assert md is not None
+    assert "## Submission readiness" in md
+    assert "verify" in md.lower()
+
+
+def test_render_submission_groups_blockers_and_warnings():
+    md = syn.render_submission_section(_submission_bundle(checked=True, findings=_submission_findings()))
+    assert md is not None
+    assert "Blockers (1)" in md
+    assert "Warnings (1)" in md
+    assert "the title is empty" in md
+    assert "approximately 9 pages" in md
+
+
+def test_stitch_orders_desk_reject_guards_then_summary():
+    paper = IngestedPaper(
+        title="A Paper", references={}, citations=[],
+        anonymization_checked=True, anonymization_findings=[],
+        submission_checked=True, submission_findings=_submission_findings(),
+    )
+    bundle = ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+    md = syn.stitch_review({"summary": "s"}, bundle)
+    # Order: Anonymization → Submission readiness → Summary.
+    assert md.index("## Anonymization audit") < md.index("## Submission readiness")
+    assert md.index("## Submission readiness") < md.index("## Summary")
 
 
 def test_stitch_omits_checklist_section_when_not_found():

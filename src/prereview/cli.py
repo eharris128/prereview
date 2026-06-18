@@ -11,6 +11,7 @@ from pathlib import Path
 from . import DEFAULT_MODEL, DEFAULT_SYNTHESIS_MODEL, __version__
 from .cache import DEFAULT_CACHE_DIR
 from .pipeline import run_pipeline
+from .venue_rules import DEFAULT_VENUE, VENUE_RULES
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -64,6 +65,32 @@ def _build_parser() -> argparse.ArgumentParser:
             "(.tex mode only) Comma-separated author surnames to also grep for in the body "
             "as an extra anonymization check. Hits inside \\cite{} and hyphenated method "
             "names (e.g. Smith-Waterman) are suppressed."
+        ),
+    )
+    p.add_argument(
+        "--venue",
+        default=DEFAULT_VENUE,
+        choices=sorted(VENUE_RULES),
+        help=f"Venue whose submission rules to check against. Default: {DEFAULT_VENUE}.",
+    )
+    p.add_argument(
+        "--gate",
+        action="store_true",
+        help=(
+            "Exit non-zero (code 4) if a hard desk-reject blocker is found (residual "
+            "identity, placeholder/empty/changed title or abstract, color result table, "
+            "unanswered mandatory checklist item, or — PDF only — over-length). Default: "
+            "advisory only, exit code unchanged."
+        ),
+    )
+    p.add_argument(
+        "--abstract-baseline",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "(.tex mode only) Snapshot the abstract to PATH on first run, then flag on "
+            "later runs if it has changed substantially (AAAI two-deadline guard)."
         ),
     )
     p.add_argument(
@@ -153,6 +180,12 @@ def main(argv: list[str] | None = None) -> int:
                 run_checklist=args.run_checklist,
                 run_anonymize=args.run_anonymize,
                 authors=args.authors,
+                venue=args.venue,
+                abstract_baseline=(
+                    args.abstract_baseline.expanduser().resolve()
+                    if args.abstract_baseline is not None
+                    else None
+                ),
                 verbose=args.verbose,
             )
         )
@@ -169,6 +202,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(str(out_path))
+
+    # Exit-code precedence (KTD-8): 4 (hard desk-reject blocker under --gate) outranks
+    # 3 (coverage/degradation gap) outranks 0 (clean). A blocker is a confident,
+    # mechanically-detected desk-reject trigger; gating on it is opt-in so the default
+    # run keeps its existing advisory, exit-code-neutral semantics.
+    if args.gate and report is not None and report.gate_blockers:
+        n = len(report.gate_blockers)
+        print(
+            f"prereview: --gate failed — {n} hard desk-reject blocker{'' if n == 1 else 's'}: "
+            + "; ".join(report.gate_blockers)
+            + ". See 'Submission readiness' / 'Anonymization audit' in the output.",
+            file=sys.stderr,
+        )
+        return 4
 
     # The exit code communicates coverage integrity: 0 = ran clean and complete; 3 = ran
     # but at least one citation could not be checked (infrastructure) or the prose pass

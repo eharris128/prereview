@@ -207,6 +207,52 @@ class AnonymizationFinding(BaseModel):
     detail: str = ""  # why it is a deanonymization risk, framed as "verify"
 
 
+class SubmissionFindingKind(str, Enum):
+    """A mechanical, desk-reject-eligible submission problem (U3).
+
+    These map to the AAAI rules a paper is summarily rejected for tripping:
+    over-length, a placeholder/empty/changed title or abstract, a color-coded
+    result table, or an incomplete reproducibility checklist.
+    """
+
+    OVER_LENGTH = "over_length"
+    PLACEHOLDER_TITLE = "placeholder_title"
+    PLACEHOLDER_ABSTRACT = "placeholder_abstract"
+    CHANGED_ABSTRACT = "changed_abstract"
+    COLOR_TABLE = "color_table"
+    CHECKLIST_INCOMPLETE = "checklist_incomplete"
+
+
+class SubmissionSeverity(str, Enum):
+    """Whether a submission finding hard-blocks (gateable) or only warns.
+
+    ``BLOCKER`` is a confident desk-reject trigger and contributes to ``--gate``'s
+    exit code 4. ``WARNING`` is approximate (e.g. an over-length count from an
+    un-isolable references boundary) and never hard-blocks — the precision-first
+    convention: an uncertain measurement degrades to a warning, never a false
+    desk-reject.
+    """
+
+    BLOCKER = "blocker"
+    WARNING = "warning"
+
+
+class SubmissionFinding(BaseModel):
+    """One submission-readiness issue surfaced to the author.
+
+    Mirrors :class:`ChecklistFinding` / :class:`AnonymizationFinding`: a
+    deterministic, source-level finding rendered in its own section. ``detail``
+    carries the human-readable specifics; ``evidence`` quotes the offending
+    fragment when there is one. Advisory by default; only ``BLOCKER`` findings
+    change the exit code, and only under ``--gate``.
+    """
+
+    kind: SubmissionFindingKind
+    severity: SubmissionSeverity
+    detail: str
+    evidence: str = ""
+
+
 class IngestedPaper(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
@@ -239,6 +285,12 @@ class IngestedPaper(BaseModel):
     # tell a clean confirmation apart from a skipped section.
     anonymization_checked: bool = False
     anonymization_findings: list[AnonymizationFinding] = Field(default_factory=list)
+    # Submission-readiness / venue-rules guard output (U3). ``submission_checked``
+    # distinguishes "guard ran" from "guard not run" for the renderer and the
+    # methodology note. The PDF path runs the length check; the TeX path runs the
+    # source-level checks (placeholder/abstract-diff/color-tables/checklist).
+    submission_checked: bool = False
+    submission_findings: list[SubmissionFinding] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):
@@ -269,6 +321,12 @@ class CoverageReport(BaseModel):
     recovered_after_retry: int = 0  # transient calls that succeeded on a retry
     circuit_broken_sources: list[str] = Field(default_factory=list)  # sources stopped mid-run
     synthesis_degraded: bool = False  # prose pass failed; deterministic sections still written
+    # Hard desk-reject blockers for ``--gate`` (U3): residual-identity (U2) plus
+    # blocker-severity submission findings. Populated every run; the CLI only acts
+    # on it (exit code 4, which outranks the coverage-gap exit 3) when ``--gate``
+    # is passed. Distinct from infrastructure coverage — it never affects
+    # ``has_coverage_gap``.
+    gate_blockers: list[str] = Field(default_factory=list)
 
     @property
     def has_coverage_gap(self) -> bool:

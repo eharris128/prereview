@@ -34,7 +34,9 @@ from .models import (
     IngestedPaper,
     LinkCheck,
     Reference,
+    SubmissionFinding,
 )
+from .venue_rules import DEFAULT_VENUE, audit_submission_tex, get_rules
 
 _CHECKSUB_RE = re.compile(r"\\checksubsection\b")
 
@@ -733,6 +735,8 @@ async def ingest_tex(
     run_checklist: bool = True,
     run_anonymize: bool = True,
     authors: Optional[str] = None,
+    venue: str = DEFAULT_VENUE,
+    abstract_baseline: Optional[Path] = None,
 ) -> IngestedPaper:
     """Ingest a .tex file (and its sibling .bib) into an :class:`IngestedPaper`.
 
@@ -818,6 +822,17 @@ async def ingest_tex(
         )
         _log(verbose, f"anonymization audit: {len(anonymization_findings)} finding(s)")
 
+    submission_findings: list[SubmissionFinding] = audit_submission_tex(
+        get_rules(venue),
+        title=title,
+        abstract=abstract,
+        tex_text=tex_text,
+        checklist_found=checklist_found,
+        checklist_findings=checklist_findings,
+        abstract_baseline=abstract_baseline,
+    )
+    _log(verbose, f"submission-readiness guard: {len(submission_findings)} finding(s)")
+
     return IngestedPaper(
         title=title,
         abstract=abstract,
@@ -834,4 +849,6 @@ async def ingest_tex(
         section_titles=section_titles,
         anonymization_checked=anonymization_checked,
         anonymization_findings=anonymization_findings,
+        submission_checked=True,
+        submission_findings=submission_findings,
     )

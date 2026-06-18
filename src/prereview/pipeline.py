@@ -22,6 +22,7 @@ from .models import (
 from .resolve import Resolver
 from .synthesize import synthesize_review
 from .tex_ingest import ingest_tex
+from .venue_rules import DEFAULT_VENUE, collect_gate_blockers
 from .verify import Verifier
 
 
@@ -53,6 +54,8 @@ async def run_pipeline(
     run_checklist: bool = True,
     run_anonymize: bool = True,
     authors: Optional[str] = None,
+    venue: str = DEFAULT_VENUE,
+    abstract_baseline: Optional[Path] = None,
     verbose: bool = False,
 ) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -71,10 +74,12 @@ async def run_pipeline(
             run_checklist=run_checklist,
             run_anonymize=run_anonymize,
             authors=authors,
+            venue=venue,
+            abstract_baseline=abstract_baseline,
         )
     else:
         _log(verbose, f"Stage 1: ingesting (pdf mode) {pdf_path}")
-        paper = await ingest_pdf(pdf_path, model=model, verbose=verbose)
+        paper = await ingest_pdf(pdf_path, model=model, verbose=verbose, venue=venue)
     _log(verbose, f"  parsed {len(paper.references)} references, {len(paper.citations)} in-text citations")
     if not paper.references:
         print(
@@ -161,6 +166,7 @@ async def run_pipeline(
         verification_degraded=verification_degraded,
         recovered_after_retry=resolver.recovered_after_retry,
         circuit_broken_sources=resolver.circuit_broken_sources,
+        gate_blockers=collect_gate_blockers(paper),
     )
 
     bundle = ReviewBundle(

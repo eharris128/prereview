@@ -73,7 +73,7 @@ async def test_pipeline_end_to_end(tmp_path: Path, monkeypatch, fake_paper):
     pdf = tmp_path / "draft.pdf"
     pdf.write_bytes(b"%PDF-1.4 not really a pdf")
 
-    async def fake_ingest(pdf_path, *, model, verbose=False):
+    async def fake_ingest(pdf_path, *, model, verbose=False, **_kw):
         return fake_paper
 
     monkeypatch.setattr(pipeline, "ingest_pdf", fake_ingest)
@@ -206,7 +206,7 @@ async def test_pipeline_backs_up_existing_review(tmp_path: Path, monkeypatch, fa
     out = tmp_path / "draft.review.md"
     out.write_text("OLD REVIEW")
 
-    async def fake_ingest(pdf_path, *, model, verbose=False):
+    async def fake_ingest(pdf_path, *, model, verbose=False, **_kw):
         return IngestedPaper(title="t", references={}, citations=[])
 
     class _NoOpCtx:
@@ -368,7 +368,7 @@ async def test_pipeline_pdf_mode_leaves_checklist_defaults(tmp_path: Path, monke
     pdf = tmp_path / "draft.pdf"
     pdf.write_bytes(b"%PDF-1.4")
 
-    async def fake_ingest(pdf_path, *, model, verbose=False):
+    async def fake_ingest(pdf_path, *, model, verbose=False, **_kw):
         return IngestedPaper(title="t", references={}, citations=[])
 
     captured: dict = {}
@@ -411,7 +411,7 @@ async def test_pipeline_reports_degraded_coverage(tmp_path: Path, monkeypatch):
         citations=[Citation(ref_id="1", sentence="x [1].")],
     )
 
-    async def fake_ingest(pdf_path, *, model, verbose=False):
+    async def fake_ingest(pdf_path, *, model, verbose=False, **_kw):
         return paper
 
     class FakeResolver:
@@ -473,11 +473,42 @@ async def test_pipeline_reports_degraded_coverage(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pipeline_computes_gate_blockers_from_submission(tmp_path: Path, monkeypatch):
+    """run_pipeline populates coverage.gate_blockers from the U2/U3 findings so the
+    CLI can apply --gate precedence (4 > 3 > 0)."""
+    (tmp_path / "references.bib").write_text("@article{x, author={A}, title={t}, year={2023}}\n")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\title{}
+\begin{document}
+\section{Intro}
+Body text here with plenty of words so the section is not empty at all.
+\end{document}
+"""
+    )
+
+    async def fake_synth(bundle, *, verbose=False):
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "Resolver", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "Verifier", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    _, report = await pipeline.run_pipeline(
+        tex, out=tmp_path / "paper.review.md", model="m", synthesis_model="s",
+        fetch_cited=False, cache_dir=tmp_path / "cache",
+    )
+    # Empty \title{} is a hard desk-reject blocker that reaches gate_blockers.
+    assert any("title is empty" in b for b in report.gate_blockers)
+
+
+@pytest.mark.asyncio
 async def test_pipeline_warns_loudly_on_zero_references(tmp_path: Path, monkeypatch, capsys):
     """Zero parsed references emits a loud stderr warning even without --verbose, so a
     silent-empty extraction never looks like a clean run."""
 
-    async def fake_ingest(pdf_path, *, model, verbose=False):
+    async def fake_ingest(pdf_path, *, model, verbose=False, **_kw):
         return IngestedPaper(title="t", references={}, citations=[])
 
     async def fake_synth(bundle, *, verbose=False):

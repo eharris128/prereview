@@ -70,6 +70,86 @@ def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
     assert captured["authors"] == "Smith"
 
 
+def test_parser_venue_gate_baseline_defaults():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.venue == "aaai-27"
+    assert args.gate is False
+    assert args.abstract_baseline is None
+
+
+def test_parser_unknown_venue_errors():
+    with pytest.raises(SystemExit) as exc:
+        _build_parser().parse_args(["paper.tex", "--venue", "nope-99"])
+    assert exc.value.code == 2  # argparse invalid-choice exit code
+
+
+def test_parser_gate_and_baseline_parse():
+    args = _build_parser().parse_args(["paper.tex", "--gate", "--abstract-baseline", "ab.txt"])
+    assert args.gate is True
+    assert args.abstract_baseline == Path("ab.txt")
+
+
+def test_cli_gate_exit_4_on_hard_blocker(tmp_path: Path, monkeypatch, capsys):
+    from prereview.models import CoverageReport
+
+    tex = _stub_run_pipeline(
+        monkeypatch, tmp_path,
+        report=CoverageReport(gate_blockers=["residual author identity (Jane Smith)"]),
+    )
+    assert main([str(tex), "--gate"]) == 4
+    assert "--gate failed" in capsys.readouterr().err
+
+
+def test_cli_gate_clean_exits_0(tmp_path: Path, monkeypatch):
+    from prereview.models import CoverageReport
+
+    tex = _stub_run_pipeline(monkeypatch, tmp_path, report=CoverageReport(gate_blockers=[]))
+    assert main([str(tex), "--gate"]) == 0
+
+
+def test_cli_blockers_without_gate_do_not_change_exit(tmp_path: Path, monkeypatch):
+    from prereview.models import CoverageReport
+
+    tex = _stub_run_pipeline(
+        monkeypatch, tmp_path, report=CoverageReport(gate_blockers=["something"])
+    )
+    # No --gate → advisory only → exit 0 despite blockers present.
+    assert main([str(tex)]) == 0
+
+
+def test_cli_gate_precedence_over_coverage_gap(tmp_path: Path, monkeypatch):
+    """A hard blocker (4) outranks a coverage gap (3)."""
+    from prereview.models import CoverageReport
+
+    tex = _stub_run_pipeline(
+        monkeypatch, tmp_path,
+        report=CoverageReport(verification_degraded=1, gate_blockers=["blk"]),
+    )
+    assert main([str(tex), "--gate"]) == 4
+
+
+def test_main_threads_venue_and_baseline_to_pipeline(tmp_path: Path, monkeypatch):
+    from prereview import cli
+    from prereview.models import CoverageReport
+
+    captured = {}
+    out = tmp_path / "p.review.md"
+
+    async def fake_run(*a, **kw):
+        captured.update(kw)
+        out.write_text("# review\n")
+        return out, CoverageReport()
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    tex = tmp_path / "p.tex"
+    tex.write_text(r"\documentclass{article}")
+
+    main([str(tex), "--venue", "aaai-27", "--abstract-baseline", str(tmp_path / "ab.txt")])
+    assert captured["venue"] == "aaai-27"
+    assert captured["abstract_baseline"] == (tmp_path / "ab.txt").resolve()
+
+
 def test_main_errors_on_missing_checklist(tmp_path: Path):
     tex = tmp_path / "paper.tex"
     tex.write_text(r"\documentclass{article}")
