@@ -24,44 +24,15 @@ from typing import Optional
 
 from .ingest import _surrounding_sentence
 from .models import AnonymizationFinding, AnonymizationFindingKind, LinkCheck
+from .texutils import flatten_tex as _flatten
+from .texutils import read_balanced as _read_balanced
+from .texutils import strip_comments as _strip_comments
 
 _Kind = AnonymizationFindingKind
 
 
 # ---------------------------------------------------------------------------
-# small shared helpers (kept local, like checklist.py, to stay a leaf module)
-
-
-def _strip_comments(text: str) -> str:
-    return re.sub(r"(?<!\\)%[^\n]*", "", text)
-
-
-def _read_balanced(text: str, i: int) -> tuple[str, int]:
-    """``text[i] == '{'`` → ``(inner, index_after_close)``, brace-aware."""
-    depth = 1
-    i += 1
-    start = i
-    n = len(text)
-    while i < n and depth > 0:
-        c = text[i]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-        if depth > 0:
-            i += 1
-    return text[start:i], i + 1
-
-
-def _flatten(s: str) -> str:
-    """Reduce a TeX fragment to readable text, keeping one-arg command content."""
-    for _ in range(4):
-        s = re.sub(r"\\(?:textbf|textit|emph|texttt|textsc|textrm|textsf)\{([^{}]*)\}", r"\1", s)
-    for _ in range(4):
-        s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}", r"\1", s)
-    s = re.sub(r"\\[a-zA-Z]+\*?", " ", s)
-    s = s.replace("{", "").replace("}", "").replace("~", " ")
-    return re.sub(r"\s+", " ", s).strip()
+# small local helpers (the TeX primitives live in prereview.texutils)
 
 
 def _truncate(s: str, n: int = 240) -> str:

@@ -36,6 +36,9 @@ from .models import (
     Reference,
     SubmissionFinding,
 )
+from .texutils import flatten_tex as _flatten_tex
+from .texutils import read_balanced as _read_balanced
+from .texutils import strip_comments as _strip_tex_comments
 from .venue_rules import DEFAULT_VENUE, audit_submission_tex, get_rules
 
 _CHECKSUB_RE = re.compile(r"\\checksubsection\b")
@@ -415,48 +418,8 @@ def extract_abstract(text: str) -> Optional[str]:
 # These feed the deterministic desk-reject guards (U2 anonymization, U3
 # submission-readiness). All three strip comments first so a commented-out
 # ``% \author{...}`` cannot false-positive, and all three are brace-aware so a
-# nested ``\thanks{Univ. of {X}}`` is captured whole.
-
-
-def _strip_tex_comments(text: str) -> str:
-    """Drop ``% ...`` line comments (but not escaped ``\\%``), like checklist.py."""
-    return re.sub(r"(?<!\\)%[^\n]*", "", text)
-
-
-def _read_balanced(text: str, i: int) -> tuple[str, int]:
-    """Given ``text[i] == '{'``, return ``(inner, index_after_close)``, brace-aware.
-
-    Tolerates nested ``{...}`` so an ``\\author`` block holding
-    ``\\thanks{Univ. of {X}}`` is not truncated. An unterminated brace returns
-    everything to end-of-string rather than raising.
-    """
-    depth = 1
-    i += 1
-    start = i
-    n = len(text)
-    while i < n and depth > 0:
-        c = text[i]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-        if depth > 0:
-            i += 1
-    return text[start:i], i + 1
-
-
-def _flatten_tex(s: str) -> str:
-    """Reduce a TeX fragment to readable text, **keeping the argument** of one-arg
-    commands (so ``\\thanks{a@b.edu}`` retains its identity-bearing content) while
-    dropping command names and stray braces. Mirrors :func:`extract_title`'s
-    cleanup, reused for author/ack/section text."""
-    for _ in range(4):
-        s = re.sub(r"\\(?:textbf|textit|emph|texttt|textsc|textrm|textsf)\{([^{}]*)\}", r"\1", s)
-    for _ in range(4):
-        s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}", r"\1", s)
-    s = re.sub(r"\\[a-zA-Z]+\*?", " ", s)
-    s = s.replace("{", "").replace("}", "").replace("~", " ")
-    return re.sub(r"\s+", " ", s).strip()
+# nested ``\thanks{Univ. of {X}}`` is captured whole. The comment-strip /
+# brace-reader / fragment-flattener primitives live in :mod:`prereview.texutils`.
 
 
 # ``\author`` but not ``\authors``/``\authorrunning`` (\b after the word).

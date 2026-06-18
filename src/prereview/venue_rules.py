@@ -34,6 +34,7 @@ from .models import (
     SubmissionFindingKind,
     SubmissionSeverity,
 )
+from .texutils import strip_comments as _strip_comments
 
 _Kind = SubmissionFindingKind
 _Sev = SubmissionSeverity
@@ -96,10 +97,6 @@ def get_rules(venue: str) -> VenueRules:
 
 # ---------------------------------------------------------------------------
 # small helpers
-
-
-def _strip_comments(text: str) -> str:
-    return re.sub(r"(?<!\\)%[^\n]*", "", text)
 
 
 def _has_placeholder(text: str, markers: tuple[str, ...]) -> Optional[str]:
