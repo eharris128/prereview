@@ -70,6 +70,16 @@ def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
     assert captured["authors"] == "Smith"
 
 
+def test_parser_numeric_default_on():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.run_numeric is True
+
+
+def test_parser_no_numeric_flag():
+    args = _build_parser().parse_args(["paper.tex", "--no-numeric"])
+    assert args.run_numeric is False
+
+
 def test_parser_show_rating_default_off():
     args = _build_parser().parse_args(["paper.tex"])
     assert args.show_rating is False

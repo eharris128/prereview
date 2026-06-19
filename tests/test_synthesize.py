@@ -21,6 +21,8 @@ from prereview.models import (
     CoverageReport,
     IngestedPaper,
     LinkCheck,
+    NumericFinding,
+    NumericFindingKind,
     Reference,
     ReviewBundle,
     SubmissionFinding,
@@ -1058,3 +1060,53 @@ def test_overall_assessment_leads_with_severity_not_number():
     # is labeled secondary with the caveat.
     assert md.index("critical:") < md.index("/10")
     assert "secondary" in md.lower()
+
+
+# ---------------------------------------------------------------------------
+# U6: numerical-sanity rendering + methodology coherence
+
+
+def _numeric_bundle(findings=None, *, checked=True) -> ReviewBundle:
+    paper = IngestedPaper(
+        title="P", references={}, citations=[],
+        numeric_checked=checked, numeric_findings=findings or [],
+    )
+    return ReviewBundle(paper=paper, verifications=[], model="m", synthesis_model="s")
+
+
+def test_render_numeric_none_when_no_findings():
+    assert syn.render_numeric_section(_numeric_bundle([])) is None
+
+
+def test_render_numeric_groups_and_advisory():
+    K = NumericFindingKind
+    findings = [
+        NumericFinding(kind=K.BOUNDED_METRIC, detail="an accuracy of 102% exceeds the 100% ceiling", evidence="accuracy of 102%"),
+        NumericFinding(kind=K.SPLIT_MISMATCH, detail="train+val+test does not equal the stated total"),
+    ]
+    md = syn.render_numeric_section(_numeric_bundle(findings))
+    assert md is not None
+    assert "## Numerical sanity" in md
+    assert "Out-of-range metrics (1)" in md
+    assert "Dataset split arithmetic (1)" in md
+    assert "verify" in md.lower()
+    assert "accuracy of 102%" in md  # evidence quoted
+
+
+def test_stitch_includes_numeric_section():
+    bundle = _numeric_bundle([NumericFinding(kind=NumericFindingKind.BOUNDED_METRIC, detail="d", evidence="e")])
+    md = syn.stitch_review({"summary": "s"}, bundle)
+    assert "## Numerical sanity" in md
+
+
+def test_methodology_qualifies_stats_bullet_once_numeric_ran():
+    """Shipping U6 makes the blanket 'does not check reported statistics' promise
+    false — the methodology must no longer claim it."""
+    meth = syn.render_methodology(_numeric_bundle([], checked=True))
+    assert "Reported statistics (no statcheck / GRIM-style audit)." not in meth
+    assert "Numerical sanity section above checks" in meth
+
+
+def test_methodology_keeps_stats_bullet_when_numeric_off():
+    meth = syn.render_methodology(_numeric_bundle([], checked=False))
+    assert "Reported statistics (no statcheck / GRIM-style audit)." in meth

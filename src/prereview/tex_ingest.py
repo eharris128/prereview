@@ -33,9 +33,11 @@ from .models import (
     Citation,
     IngestedPaper,
     LinkCheck,
+    NumericFinding,
     Reference,
     SubmissionFinding,
 )
+from .numeric_sanity import audit_numeric
 from .texutils import flatten_tex as _flatten_tex
 from .texutils import read_balanced as _read_balanced
 from .texutils import strip_comments as _strip_tex_comments
@@ -700,6 +702,7 @@ async def ingest_tex(
     authors: Optional[str] = None,
     venue: str = DEFAULT_VENUE,
     abstract_baseline: Optional[Path] = None,
+    run_numeric: bool = True,
 ) -> IngestedPaper:
     """Ingest a .tex file (and its sibling .bib) into an :class:`IngestedPaper`.
 
@@ -796,6 +799,11 @@ async def ingest_tex(
     )
     _log(verbose, f"submission-readiness guard: {len(submission_findings)} finding(s)")
 
+    numeric_findings: list[NumericFinding] = []
+    if run_numeric:
+        numeric_findings = audit_numeric(body, tex_text, abstract)
+        _log(verbose, f"numerical-sanity pack: {len(numeric_findings)} finding(s)")
+
     return IngestedPaper(
         title=title,
         abstract=abstract,
@@ -814,4 +822,6 @@ async def ingest_tex(
         anonymization_findings=anonymization_findings,
         submission_checked=True,
         submission_findings=submission_findings,
+        numeric_checked=run_numeric,
+        numeric_findings=numeric_findings,
     )

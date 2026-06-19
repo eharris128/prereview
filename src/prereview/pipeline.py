@@ -58,6 +58,7 @@ async def run_pipeline(
     abstract_baseline: Optional[Path] = None,
     run_reviewer2: bool = True,
     show_rating: bool = False,
+    run_numeric: bool = True,
     verbose: bool = False,
 ) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -78,6 +79,7 @@ async def run_pipeline(
             authors=authors,
             venue=venue,
             abstract_baseline=abstract_baseline,
+            run_numeric=run_numeric,
         )
     else:
         _log(verbose, f"Stage 1: ingesting (pdf mode) {pdf_path}")

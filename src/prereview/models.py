@@ -253,6 +253,33 @@ class SubmissionFinding(BaseModel):
     evidence: str = ""
 
 
+class NumericFindingKind(str, Enum):
+    """A CS/ML numerical-sanity issue (U6), the kind a reviewer pounces on.
+
+    All deterministic, high-precision, and advisory — a flagged number is one to
+    re-check, never an accusation of fabrication.
+    """
+
+    BOUNDED_METRIC = "bounded_metric"  # accuracy/F1 > its ceiling (100% or 1.0)
+    SPLIT_MISMATCH = "split_mismatch"  # train+val+test != stated total
+    MEAN_STD_RANGE = "mean_std_range"  # mean±std pushes past a metric's bound
+    HYPERPARAM_DRIFT = "hyperparam_drift"  # prose vs table hyperparameter disagree >2x
+    ABSTRACT_TABLE_DELTA = "abstract_table_delta"  # abstract's headline delta absent from tables
+
+
+class NumericFinding(BaseModel):
+    """One numerical-sanity issue surfaced to the author.
+
+    Mirrors the other deterministic findings: ``detail`` carries the
+    human-readable specifics, ``evidence`` quotes the offending fragment. Advisory
+    framing — the check flags an inconsistency to verify, not a fabrication.
+    """
+
+    kind: NumericFindingKind
+    detail: str
+    evidence: str = ""
+
+
 class IngestedPaper(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
@@ -291,6 +318,11 @@ class IngestedPaper(BaseModel):
     # source-level checks (placeholder/abstract-diff/color-tables/checklist).
     submission_checked: bool = False
     submission_findings: list[SubmissionFinding] = Field(default_factory=list)
+    # ML numerical-sanity pack output (TeX-only — needs the raw tables; U6).
+    # ``numeric_checked`` lets the methodology section stop claiming statistics
+    # are unchecked once the pack has run.
+    numeric_checked: bool = False
+    numeric_findings: list[NumericFinding] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):

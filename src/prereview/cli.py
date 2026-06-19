@@ -86,6 +86,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--no-numeric",
+        dest="run_numeric",
+        action="store_false",
+        help="(.tex mode only) Skip the ML numerical-sanity pack (default: on for .tex).",
+    )
+    p.set_defaults(run_numeric=True)
+    p.add_argument(
         "--venue",
         default=DEFAULT_VENUE,
         choices=sorted(VENUE_RULES),
@@ -206,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 run_reviewer2=args.run_reviewer2,
                 show_rating=args.show_rating,
+                run_numeric=args.run_numeric,
                 verbose=args.verbose,
             )
         )

@@ -22,6 +22,7 @@ from .models import (
     ChecklistFinding,
     ChecklistFindingKind,
     CitationRole,
+    NumericFindingKind,
     ReviewBundle,
     SubmissionSeverity,
     VerificationResult,
@@ -571,6 +572,47 @@ def render_submission_section(bundle: ReviewBundle) -> Optional[str]:
     return "\n".join(out)
 
 
+# Fixed render order; also where numeric kinds map to user-facing headings.
+_NUMERIC_SUBHEADINGS: dict[NumericFindingKind, str] = {
+    NumericFindingKind.BOUNDED_METRIC: "Out-of-range metrics",
+    NumericFindingKind.SPLIT_MISMATCH: "Dataset split arithmetic",
+    NumericFindingKind.MEAN_STD_RANGE: "Implausible mean ± std",
+    NumericFindingKind.HYPERPARAM_DRIFT: "Prose / table hyperparameter drift",
+    NumericFindingKind.ABSTRACT_TABLE_DELTA: "Abstract vs. table deltas",
+}
+
+
+def render_numeric_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Numerical sanity section, or None when nothing was flagged.
+
+    Like :func:`render_hygiene_section`, it renders only when there is something to
+    surface (the checks are high-precision, so a finding is worth attention). Every
+    item is advisory — a number to verify, not a finding of error."""
+    findings = bundle.paper.numeric_findings
+    if not findings:
+        return None
+    out: list[str] = ["## Numerical sanity", ""]
+    out.append(
+        "High-precision deterministic checks for the numerical errors reviewers catch — "
+        "out-of-range metrics, split arithmetic, mean ± std ranges, prose/table "
+        "hyperparameter drift, and abstract-vs-table deltas. Each is **advisory**: a number "
+        "to **verify**, not a finding of error."
+    )
+    out.append("")
+    for kind, heading in _NUMERIC_SUBHEADINGS.items():
+        group = [f for f in findings if f.kind == kind]
+        if not group:
+            continue
+        out.append(f"### {heading} ({len(group)})")
+        out.append("")
+        for f in group:
+            out.append(f"- {f.detail}")
+            if f.evidence:
+                out.append(f"  > {f.evidence}")
+        out.append("")
+    return "\n".join(out)
+
+
 def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     """Coverage & reliability — the trust signal. Renders only when there is an
     infrastructure outcome to disclose (degradation, recovery, a tripped source, or a
@@ -666,6 +708,17 @@ def render_methodology(bundle: ReviewBundle) -> str:
             if n_sub
             else "Submission-readiness checks ran against the venue rules: no desk-reject issues flagged."
         )
+    # Once the numerical-sanity pack (U6) has run, the blanket "does not check
+    # reported statistics" promise is no longer true — qualify it to what the pack
+    # actually covers vs. the p-value auditing it still does not.
+    if bundle.paper.numeric_checked:
+        stats_bullet = (
+            "Statistical-test reporting (no statcheck / GRIM-style p-value audit) — though the "
+            "Numerical sanity section above checks metric bounds, split arithmetic, mean ± std "
+            "ranges, and prose/table hyperparameter consistency."
+        )
+    else:
+        stats_bullet = "Reported statistics (no statcheck / GRIM-style audit)."
     return textwrap.dedent(f"""
     ## Methodology and limits of this review
 
@@ -684,7 +737,7 @@ def render_methodology(bundle: ReviewBundle) -> str:
 
     - Figures, tables, captions.
     - Mathematical proofs or formal correctness.
-    - Reported statistics (no statcheck / GRIM-style audit).
+    - {stats_bullet}
     - Plagiarism or text-overlap with prior work.
     - **Missing prior work** — `prereview` only verifies citations the author already made; it does
       not search for relevant work the author should have cited.
@@ -1184,6 +1237,9 @@ def stitch_review(
     checklist = render_checklist_section(bundle)
     if checklist is not None:
         sections.append(checklist.strip())
+    numeric = render_numeric_section(bundle)
+    if numeric is not None:
+        sections.append(numeric.strip())
     sections.extend(
         [
             "## Questions for the author",
