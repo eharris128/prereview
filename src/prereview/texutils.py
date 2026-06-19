@@ -42,6 +42,20 @@ def read_balanced(text: str, i: int) -> tuple[str, int]:
     return text[start:i], i + 1
 
 
+# Table-family environments whose bodies survive prose stripping only in the raw
+# source — used by the color-table guard (U3) and the table-aware numeric checks (U6).
+TABLE_ENV_RE = re.compile(
+    r"\\begin\s*\{(table\*?|tabular\*?|tabularx|longtable)\}(.*?)\\end\s*\{\1\}",
+    re.DOTALL,
+)
+
+
+def table_bodies(tex_text: str) -> list[str]:
+    """The inner body of every table/tabular environment, comments stripped."""
+    text = strip_comments(tex_text)
+    return [m.group(2) for m in TABLE_ENV_RE.finditer(text)]
+
+
 def flatten_tex(s: str) -> str:
     """Reduce a TeX fragment to readable text, **keeping the argument** of one-arg
     commands (so ``\\thanks{a@b.edu}`` retains its identity-bearing content) while

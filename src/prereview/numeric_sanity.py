@@ -23,7 +23,7 @@ import re
 from typing import Callable, Optional
 
 from .models import NumericFinding, NumericFindingKind
-from .texutils import strip_comments
+from .texutils import table_bodies
 
 _Kind = NumericFindingKind
 
@@ -75,16 +75,9 @@ def _truncate(s: str, n: int = 160) -> str:
     return s if len(s) <= n else s[: n - 1].rstrip() + "…"
 
 
-# Raw table bodies (where math/numbers survive the prose stripper).
-_TABLE_ENV_RE = re.compile(
-    r"\\begin\s*\{(table\*?|tabular\*?|tabularx|longtable)\}(.*?)\\end\s*\{\1\}",
-    re.DOTALL,
-)
-
-
 def _table_text(tex_text: str) -> str:
-    text = strip_comments(tex_text)
-    return "\n".join(m.group(2) for m in _TABLE_ENV_RE.finditer(text))
+    """Raw table bodies joined (where math/numbers survive the prose stripper)."""
+    return "\n".join(table_bodies(tex_text))
 
 
 # ---------------------------------------------------------------------------

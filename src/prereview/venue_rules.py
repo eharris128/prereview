@@ -34,6 +34,7 @@ from .models import (
     SubmissionFindingKind,
     SubmissionSeverity,
 )
+from .texutils import TABLE_ENV_RE as _TABLE_ENV_RE
 from .texutils import strip_comments as _strip_comments
 
 _Kind = SubmissionFindingKind
@@ -275,12 +276,6 @@ def check_changed_abstract(
             )
         ]
     return []
-
-
-_TABLE_ENV_RE = re.compile(
-    r"\\begin\s*\{(table\*?|tabular\*?|tabularx|longtable)\}(.*?)\\end\s*\{\1\}",
-    re.DOTALL,
-)
 
 
 def check_color_tables(rules: VenueRules, tex_text: str) -> list[SubmissionFinding]:
