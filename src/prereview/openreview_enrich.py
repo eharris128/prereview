@@ -152,8 +152,8 @@ async def enrich_with_openreview(
     degraded = False
     for ref_id, sites in by_ref.items():
         ref = sites[0].reference
-        if not (ref.arxiv_id or ref.doi):
-            continue  # nothing to map to an OpenReview note — silent skip
+        if not ref.title:
+            continue  # the lookup matches on title — nothing to search by; silent skip
         try:
             info = await asyncio.to_thread(_find_decision, client, ref.arxiv_id, ref.doi, ref.title)
         except Exception as e:

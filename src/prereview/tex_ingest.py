@@ -38,6 +38,7 @@ from .models import (
     SubmissionFinding,
 )
 from .numeric_sanity import audit_numeric
+from .texutils import AUTHOR_HEAD_RE as _AUTHOR_RE
 from .texutils import flatten_tex as _flatten_tex
 from .texutils import read_balanced as _read_balanced
 from .texutils import strip_comments as _strip_tex_comments
@@ -424,8 +425,6 @@ def extract_abstract(text: str) -> Optional[str]:
 # brace-reader / fragment-flattener primitives live in :mod:`prereview.texutils`.
 
 
-# ``\author`` but not ``\authors``/``\authorrunning`` (\b after the word).
-_AUTHOR_RE = re.compile(r"\\author\b\s*\*?\s*(?:\[[^\]]*\])?\s*")
 _ACKS_ENV_RE = re.compile(
     r"\\begin\s*\{(acks|acknowledgements?|acknowledgments?)\}(.*?)\\end\s*\{\1\}",
     re.DOTALL | re.IGNORECASE,

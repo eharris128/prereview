@@ -86,8 +86,9 @@ def _table_text(tex_text: str) -> str:
 
 _METRIC_ALT = "|".join(re.escape(m) for m in sorted(_ALL_METRICS, key=len, reverse=True))
 _FRACTION_ALT = "|".join(re.escape(m) for m in sorted(_FRACTION_METRICS, key=len, reverse=True))
-# metric ... NN.N%  (percentage form; the >100 bound makes a wide gap safe)
-_PCT_METRIC_RE = re.compile(rf"\b({_METRIC_ALT})\b[^.\n]{{0,40}}?(\d+(?:\.\d+)?)\s*%", re.IGNORECASE)
+# metric <connective> NN.N%  (a tight 0-15 gap so an unrelated nearby "120% of
+# baseline" is not attributed to the metric word).
+_PCT_METRIC_RE = re.compile(rf"\b({_METRIC_ALT})\b[^.\n]{{0,15}}?(\d+(?:\.\d+)?)\s*%", re.IGNORECASE)
 # fraction metric <connective> 1.NN  — spaces-only between metric and value (no
 # intervening words), so "recall computation took 1.5 seconds" is NOT matched.
 _FRAC_METRIC_RE = re.compile(
@@ -141,18 +142,25 @@ def _labeled_number(sent: str, label: str) -> Optional[float]:
     (e.g. ``val(?:idation)?|dev``) does not split the whole pattern or shift the
     numeric capture group.
     """
-    for pat in (rf"(?:{label})\b\s*(?:set\s*)?(?:of|:|=|with|,)?\s*(\d[\d.,]*\s*[kKmM]?)\b",
-                rf"(\d[\d.,]*\s*[kKmM]?)\s+(?:{label})\b"):
+    # Number-before-label FIRST ("1000 test"), so it wins over the label-of-number
+    # form ("test of 10000 total") which would otherwise bind the grand total as the
+    # split count. No ',' connective either — it let "8000 train, 1000 val" bind the
+    # next clause's number to ``train``.
+    for pat in (rf"(\d[\d.,]*\s*[kKmM]?)\s+(?:{label})\b",
+                rf"(?:{label})\b\s*(?:set\s*)?(?:of|:|=|with)?\s*(\d[\d.,]*\s*[kKmM]?)\b"):
         m = re.search(pat, sent, re.IGNORECASE)
         if m:
             return _to_float(m.group(1))
     return None
 
 
+# The grand total must be *explicitly signalled* — a bare "of N" or "N examples"
+# matched the train count itself ("a training set of 8000 …"), fabricating a
+# mismatch. Require "total" / "in total" / "out of" adjacency instead.
 _TOTAL_RE = re.compile(
-    r"(?:total(?:ing)?|overall|altogether|in total)\D{0,12}?(\d[\d.,]*\s*[kKmM]?)"
-    r"|(\d[\d.,]*\s*[kKmM]?)\s*(?:examples|samples|instances|images|sentences|documents|data\s*points|total)"
-    r"|\bof\s+(\d[\d.,]*\s*[kKmM]?)\b",
+    r"(?:a\s+)?total(?:ing)?\s+(?:of\s+)?(\d[\d.,]*\s*[kKmM]?)"
+    r"|(\d[\d.,]*\s*[kKmM]?)\s*(?:examples|samples|instances|images|sentences|documents|data\s*points)?\s*(?:in\s+total|total\b)"
+    r"|\bout\s+of\s+(?:a\s+total\s+of\s+)?(\d[\d.,]*\s*[kKmM]?)",
     re.IGNORECASE,
 )
 
@@ -194,23 +202,29 @@ _MEAN_STD_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:±|\\pm)\s*(\d+(?:\.\d+)?)\s*(%
 
 
 def check_mean_std(tex_text: str) -> list[NumericFinding]:
+    """Flag a metric reported as ``mean ± std`` whose **central value** is itself
+    impossible — a percent-scale mean above 100.
+
+    Deliberately conservative: a near-ceiling mean whose ``± std`` merely *touches*
+    the bound (e.g. ``F1 of 0.95 ± 0.08`` → 1.03) is the normal way strong results
+    are reported and must NOT flag — that was a false-positive in an earlier design.
+    A fraction-metric mean above 1.0 is caught by the bounded-metric check instead."""
     findings: list[NumericFinding] = []
     for m in _MEAN_STD_RE.finditer(tex_text):
         mean = float(m.group(1))
-        std = float(m.group(2))
         pct = m.group(3) == "%"
         window = tex_text[max(0, m.start() - 60): m.start()].lower()
         has_metric = pct or any(metric in window for metric in _ALL_METRICS)
         if not has_metric:
             continue  # not clearly a bounded-metric measurement — skip
-        ceiling = 100.0 if (pct or mean > 1.0) else 1.0
-        if mean + std > ceiling + 1e-9:
+        # Only a percent-scale mean over 100 is unambiguously impossible.
+        if (pct or mean > 1.0) and mean > 100.0 + 1e-9:
             findings.append(
                 NumericFinding(
                     kind=_Kind.MEAN_STD_RANGE,
                     detail=(
-                        f"{m.group(1)} ± {m.group(2)} reaches {round(mean + std, 4)}, past this "
-                        f"metric's {ceiling:g} ceiling — verify the mean/std"
+                        f"a mean of {m.group(1)}{'%' if pct else ''} ± {m.group(2)} exceeds the "
+                        "100 ceiling for this metric — verify the number"
                     ),
                     evidence=_truncate(m.group(0)),
                 )
@@ -315,6 +329,16 @@ def _table_deltas(text: str) -> list[float]:
     return out
 
 
+def _delta_matches(abstract_delta: float, table_delta: float) -> bool:
+    """Within the relative tolerance — with a guard so two zero deltas (a '+0'
+    abstract claim paired with a '+0' table cell) compare equal instead of
+    dividing by zero."""
+    scale = max(abs(abstract_delta), abs(table_delta))
+    if scale == 0:
+        return True
+    return abs(abstract_delta - table_delta) / scale <= _DELTA_TOLERANCE
+
+
 def check_table_abstract_delta(abstract: Optional[str], tex_text: str) -> list[NumericFinding]:
     if not abstract:
         return []
@@ -326,7 +350,7 @@ def check_table_abstract_delta(abstract: Optional[str], tex_text: str) -> list[N
         return []  # tables state no deltas — nothing to reconcile against
     findings: list[NumericFinding] = []
     for d in abs_deltas:
-        if not any(abs(d - td) / max(d, td) <= _DELTA_TOLERANCE for td in table_deltas):
+        if not any(_delta_matches(d, td) for td in table_deltas):
             findings.append(
                 NumericFinding(
                     kind=_Kind.ABSTRACT_TABLE_DELTA,

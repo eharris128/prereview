@@ -86,19 +86,23 @@ def extract_text(pdf_path: Path) -> str:
 
 
 def find_references_start_page(pages: list[str]) -> Optional[int]:
-    """1-based page number of the first page bearing a standalone references
+    """1-based page number of the page bearing the bibliography's references
     heading, or ``None`` when no page does (the boundary is not isolable).
 
-    Deliberately conservative: it reuses the same high-precision header regex as
-    :func:`split_at_references` (a "References"/"Bibliography" line essentially
-    alone on its line), and returns ``None`` rather than guessing when no page
-    matches — a two-column PDF whose references start mid-page will simply not
-    isolate, which the length guard reports as a warning, never a hard block.
+    Uses the **last** page matching the high-precision header regex — mirroring
+    :func:`split_at_references`, which takes the last "References" occurrence
+    because a stray earlier one (a forward reference, or a per-page running header
+    pypdf repeats on every page) would otherwise undercount the technical pages and
+    silently suppress a real over-length desk-reject. Returns ``None`` rather than
+    guessing when no page matches — a two-column PDF whose references start mid-page
+    simply does not isolate, which the length guard reports as a warning, never a
+    hard block.
     """
+    found: Optional[int] = None
     for idx, page in enumerate(pages, start=1):
         if _REFS_HEADERS.search(page):
-            return idx
-    return None
+            found = idx
+    return found
 
 
 # ---------------------------------------------------------------------------

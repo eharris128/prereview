@@ -42,6 +42,12 @@ def read_balanced(text: str, i: int) -> tuple[str, int]:
     return text[start:i], i + 1
 
 
+# ``\author`` head (but not ``\authors`` / ``\authorrunning`` — \b after the word),
+# up to and including the opening brace position. Shared so tex_ingest's author-block
+# extraction and anonymize's author-span dedup can never silently diverge.
+AUTHOR_HEAD_RE = re.compile(r"\\author\b\s*\*?\s*(?:\[[^\]]*\])?\s*")
+
+
 # Table-family environments whose bodies survive prose stripping only in the raw
 # source — used by the color-table guard (U3) and the table-aware numeric checks (U6).
 TABLE_ENV_RE = re.compile(

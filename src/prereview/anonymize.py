@@ -24,6 +24,7 @@ from typing import Optional
 
 from .ingest import _surrounding_sentence
 from .models import AnonymizationFinding, AnonymizationFindingKind, LinkCheck
+from .texutils import AUTHOR_HEAD_RE as _AUTHOR_HEAD_RE
 from .texutils import flatten_tex as _flatten
 from .texutils import read_balanced as _read_balanced
 from .texutils import strip_comments as _strip_comments
@@ -67,7 +68,6 @@ def _is_anonymized(s: Optional[str]) -> bool:
 # vector 1: residual identity blocks
 
 
-_AUTHOR_HEAD_RE = re.compile(r"\\author\b\s*\*?\s*(?:\[[^\]]*\])?\s*")
 _IDENTITY_CMDS = ("thanks", "affiliation", "affil", "institute", "email", "address")
 
 

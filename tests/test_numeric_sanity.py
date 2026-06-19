@@ -44,9 +44,24 @@ def test_split_arithmetic_mismatch():
     assert _K.SPLIT_MISMATCH in _kinds(findings)
 
 
-def test_mean_std_exceeds_ceiling():
-    findings = check_mean_std("The model reaches an accuracy of 99.5 ± 1.2 averaged over five seeds.")
+def test_mean_std_impossible_mean_flagged():
+    # The MEAN itself is impossible (>100), not merely the range touching the ceiling.
+    findings = check_mean_std("The model reaches an accuracy of 101.5 ± 1.2 averaged over five seeds.")
     assert _K.MEAN_STD_RANGE in _kinds(findings)
+
+
+def test_mean_std_near_ceiling_is_not_flagged():
+    # Regression: a near-ceiling mean whose ±std touches the bound is normal, not an error.
+    assert check_mean_std("We report an F1 of 0.95 ± 0.08 across five folds.") == []
+    assert check_mean_std("Accuracy was 99.5 ± 1.2 over three seeds.") == []
+
+
+def test_table_abstract_zero_delta_does_not_crash():
+    # Regression: a '+0' abstract claim paired with a '+0' table cell must compare
+    # equal, not divide by zero (which previously crashed the whole pipeline).
+    abstract = "Our method yields a gain of 0 points over the baseline."
+    tex = r"\begin{tabular}{ll} ours & +0 \\ \end{tabular}"
+    assert check_table_abstract_delta(abstract, tex) == []
 
 
 def test_hyperparameter_prose_table_drift():
@@ -64,7 +79,7 @@ def test_abstract_table_delta_mismatch():
 
 
 def test_audit_numeric_combines_all():
-    body = "We set the learning rate to 0.1. We use train 8k / val 1k / test 2k of 10k examples."
+    body = "We set the learning rate to 0.1. We use train 8k / val 1k / test 2k of 10k examples in total."
     tex = r"\begin{tabular}{ll} learning rate & 0.001 \\ \end{tabular}"
     findings = audit_numeric(body, body + tex, abstract=None)
     assert {_K.SPLIT_MISMATCH, _K.HYPERPARAM_DRIFT} <= _kinds(findings)
@@ -99,6 +114,13 @@ _BENIGN_SENTENCES = [
     "The temperature was set to 0.7 for decoding.",
     "We report a speedup of 1.8x over the baseline.",
     "Coverage reached 99.5% of the held-out queries.",  # 99.5 < 100
+    # regression: near-ceiling mean±std (a review found these falsely flagged)
+    "We report an F1 of 0.95 ± 0.08 across five folds.",  # upper tail 1.03 but mean<1
+    "Accuracy was 99.5 ± 1.2 over three seeds.",  # near-ceiling, in-bounds mean
+    # regression: split phrasings whose 'of N' / 'N examples' is NOT a grand total
+    "We use a training set of 8000, a validation set of 1000, and a test set of 1000.",
+    "The split is 8000 train, 1000 val, and 1000 test out of 10000 total.",  # consistent
+    "Top-1 accuracy was 95%, measured on 120% of the original validation set.",  # 120% far from metric
 ]
 
 

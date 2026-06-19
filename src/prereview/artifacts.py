@@ -60,12 +60,18 @@ def _parse_artifact(url: str) -> Optional[tuple[str, str, str]]:
     Handles ``org/name`` and single-segment HF ids and strips ``.git`` / trailing
     path from GitHub repo URLs.
     """
-    m = re.search(r"(huggingface\.co|github\.com)/(.+)", url, re.IGNORECASE)
+    # Anchor the host to the scheme so an *embedded* host — e.g.
+    # "https://example.com/redirect?to=github.com/a/b" — is not mis-extracted as a
+    # claimed artifact. URLs reach here already scheme-prefixed (link_checks are
+    # normalized; body URLs are matched by _URL_RE, which requires https?://).
+    m = re.search(r"https?://(?:www\.)?(huggingface\.co|github\.com)/(.+)", url, re.IGNORECASE)
     if not m:
         return None
     host = m.group(1).lower()
-    path = m.group(2).split("?")[0].split("#")[0].strip("/")
-    segs = [s for s in path.split("/") if s]
+    raw = m.group(2).split("?")[0].split("#")[0].split()  # split() drops any trailing prose
+    if not raw:
+        return None
+    segs = [s for s in raw[0].strip("/").split("/") if s]
     if not segs:
         return None
 

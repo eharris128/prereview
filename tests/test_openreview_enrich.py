@@ -47,14 +47,26 @@ async def test_mapped_citation_gets_advisory_annotation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unmapped_reference_is_silently_skipped(monkeypatch):
+async def test_titleless_reference_is_silently_skipped(monkeypatch):
     called: list = []
     monkeypatch.setattr(ore, "_make_client", lambda u, p: object())
     monkeypatch.setattr(ore, "_find_decision", lambda *a: called.append(1) or None)
-    vrs = [_vr("1")]  # no arxiv_id, no doi → nothing to map
+    vrs = [_vr("1", title=None)]  # no title → nothing for the title-based lookup
     annotated, degraded = await ore.enrich_with_openreview(vrs, username="u", password="p")
     assert annotated == 0 and degraded is False
     assert not called  # the lookup was never attempted
+
+
+@pytest.mark.asyncio
+async def test_titled_reference_looked_up_even_without_doi_or_arxiv(monkeypatch):
+    # The lookup matches on title, so a .bib entry with a title but no DOI/arXiv id
+    # (the common case) must still be searched — not skipped.
+    monkeypatch.setattr(ore, "_make_client", lambda u, p: object())
+    monkeypatch.setattr(ore, "_find_decision", lambda c, a, d, t: OpenReviewInfo(decision="Accept"))
+    vrs = [_vr("1", title="Some Cited Paper")]  # title only, no doi/arxiv
+    annotated, degraded = await ore.enrich_with_openreview(vrs, username="u", password="p")
+    assert annotated == 1
+    assert vrs[0].openreview.decision == "Accept"
 
 
 @pytest.mark.asyncio

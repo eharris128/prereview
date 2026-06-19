@@ -49,6 +49,18 @@ def test_parse_ignores_non_artifacts_and_reserved_paths():
     assert _parse_artifact("https://huggingface.co/docs/hub") is None  # reserved
 
 
+def test_parse_ignores_host_embedded_in_query_or_path():
+    # A URL merely CONTAINING the host (redirect wrappers, proxied/cache links) is
+    # not a claimed artifact — the host must be the actual scheme host.
+    assert _parse_artifact("https://example.com/redirect?to=github.com/owner/repo") is None
+    assert _parse_artifact("https://example.com/cache/huggingface.co/google/bert") is None
+
+
+def test_parse_handles_www_prefix():
+    kind, ident, _ = _parse_artifact("https://www.github.com/owner/repo")
+    assert kind == "github_repo" and ident == "owner/repo"
+
+
 def test_extract_dedups_by_kind_and_id():
     arts = extract_artifacts([_lc("https://github.com/a/b"), _lc("https://github.com/a/b")], "")
     assert len(arts) == 1

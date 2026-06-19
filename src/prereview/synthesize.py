@@ -1215,7 +1215,10 @@ def _overall_assessment(reviewer2: Optional[dict], bundle: ReviewBundle) -> dict
             add(c["severity"], c["evidence"] or c["issue"])
 
     for f in bundle.paper.submission_findings:
-        bucket = "critical" if f.severity == SubmissionSeverity.BLOCKER else "major"
+        # A blocker is a confident desk-reject trigger → critical; a warning is
+        # approximate/uncertain by design (e.g. an un-isolable over-length count) →
+        # minor, so it never inflates the "address critical and major first" headline.
+        bucket = "critical" if f.severity == SubmissionSeverity.BLOCKER else "minor"
         add(bucket, f.evidence or f.detail)
 
     for ref_id, sites in _group_by_bibkey(bundle.verifications).items():
