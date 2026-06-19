@@ -70,6 +70,28 @@ def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
     assert captured["authors"] == "Smith"
 
 
+def test_parser_artifacts_default_off():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.run_artifacts is False
+
+
+def test_parser_artifacts_flag_opts_in():
+    args = _build_parser().parse_args(["paper.tex", "--artifacts"])
+    assert args.run_artifacts is True
+
+
+def test_hf_token_autoloaded_from_env(tmp_path: Path, monkeypatch):
+    assert "HF_TOKEN" in _DOTENV_KEYS
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("HF_TOKEN=hf-secret\n")
+    inp = tmp_path / "paper.tex"
+    inp.write_text("x")
+    _autoload_env(inp)
+    assert os.environ.get("HF_TOKEN") == "hf-secret"
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+
 def test_parser_numeric_default_on():
     args = _build_parser().parse_args(["paper.tex"])
     assert args.run_numeric is True

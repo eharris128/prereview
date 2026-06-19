@@ -59,6 +59,7 @@ async def run_pipeline(
     run_reviewer2: bool = True,
     show_rating: bool = False,
     run_numeric: bool = True,
+    run_artifacts: bool = False,
     verbose: bool = False,
 ) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -105,6 +106,15 @@ async def run_pipeline(
         paper.link_checks = await check_links(paper.link_checks, verbose=verbose)
         n_bad = sum(1 for c in paper.link_checks if not c.ok)
         _log(verbose, f"  {n_bad} URL{'s' if n_bad != 1 else ''} unreachable")
+
+    if run_artifacts:
+        _log(verbose, "Stage 1.6: checking claimed artifacts (HF / GitHub)")
+        from .artifacts import check_artifacts
+
+        body_text = "\n\n".join(b for _, b in paper.sections) if paper.sections else ""
+        paper.artifact_checks = await check_artifacts(
+            paper.link_checks, body_text, hf_token=os.environ.get("HF_TOKEN"), verbose=verbose
+        )
 
     _log(verbose, "Stage 2: resolving references")
     canonical_by_ref: dict[str, Resolution] = {}

@@ -93,6 +93,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(run_numeric=True)
     p.add_argument(
+        "--artifacts",
+        dest="run_artifacts",
+        action="store_true",
+        help=(
+            "Verify that claimed Hugging Face models/datasets and GitHub repos exist "
+            "(network; opt-in, default off). Set HF_TOKEN to probe gated/private HF artifacts."
+        ),
+    )
+    p.add_argument("--no-artifacts", dest="run_artifacts", action="store_false", help=argparse.SUPPRESS)
+    p.set_defaults(run_artifacts=False)
+    p.add_argument(
         "--venue",
         default=DEFAULT_VENUE,
         choices=sorted(VENUE_RULES),
@@ -214,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_reviewer2=args.run_reviewer2,
                 show_rating=args.show_rating,
                 run_numeric=args.run_numeric,
+                run_artifacts=args.run_artifacts,
                 verbose=args.verbose,
             )
         )
@@ -273,6 +285,7 @@ _DOTENV_KEYS = (
     "S2_API_KEY",
     "OPENALEX_API_KEY",
     "PREREVIEW_MAILTO",
+    "HF_TOKEN",
 )
 
 

@@ -19,6 +19,7 @@ from typing import Iterable, Optional
 from .llm import acompletion_json
 from .models import (
     AnonymizationFindingKind,
+    ArtifactStatus,
     ChecklistFinding,
     ChecklistFindingKind,
     CitationRole,
@@ -613,6 +614,28 @@ def render_numeric_section(bundle: ReviewBundle) -> Optional[str]:
     return "\n".join(out)
 
 
+def render_artifacts_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the Artifact availability section, or None when nothing
+    unresolved. Resolved artifacts are silent; transient failures are disclosed in
+    the coverage section instead (they are infrastructure, not author defects)."""
+    misses = [c for c in bundle.paper.artifact_checks if c.status == ArtifactStatus.TERMINAL_MISS]
+    if not misses:
+        return None
+    out: list[str] = ["## Artifact availability", ""]
+    out.append(
+        "Existence checks for the models, datasets, and repos this paper claims. Resolved "
+        "artifacts are not listed; the items below did **not** resolve — **verify** each link "
+        "before submitting. (Hugging Face's unauthenticated API cannot tell a missing artifact "
+        "from a private one; set `HF_TOKEN` to disambiguate.)"
+    )
+    out.append("")
+    for c in misses:
+        out.append(f"- {c.detail}")
+        out.append(f"  > {c.url}")
+    out.append("")
+    return "\n".join(out)
+
+
 def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     """Coverage & reliability — the trust signal. Renders only when there is an
     infrastructure outcome to disclose (degradation, recovery, a tripped source, or a
@@ -627,13 +650,16 @@ def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     recovered = cov.recovered_after_retry if cov else 0
     broken = list(cov.circuit_broken_sources) if cov else []
     synth_degraded = bool(cov.synthesis_degraded) if cov else False
+    artifact_degraded = [
+        c for c in bundle.paper.artifact_checks if c.status == ArtifactStatus.TRANSIENT_FAIL
+    ]
 
-    if not degraded and recovered == 0 and not broken and not synth_degraded:
+    if not degraded and recovered == 0 and not broken and not synth_degraded and not artifact_degraded:
         return None  # nothing infrastructure-related to disclose
 
     resolved = total - ghost - len(degraded)
     lines = ["## Review coverage & reliability", ""]
-    if degraded or broken or synth_degraded:
+    if degraded or broken or synth_degraded or artifact_degraded:
         lines.append(
             "_Some parts of this review could not be completed due to infrastructure "
             "issues. The items below are **not** findings about your paper — re-running "
@@ -670,6 +696,13 @@ def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
         lines.append(
             "- The narrative sections (summary, strengths, weaknesses, questions, rating) "
             "could not be generated this run; the deterministic sections are complete."
+        )
+    if artifact_degraded:
+        n = len(artifact_degraded)
+        lines.append(
+            f"- {n} artifact existence check{'' if n == 1 else 's'} could not be completed "
+            "(Hugging Face / GitHub unreachable after retries) — these are NOT missing "
+            "artifacts; re-run to confirm."
         )
     return "\n".join(lines) + "\n"
 
@@ -1240,6 +1273,9 @@ def stitch_review(
     numeric = render_numeric_section(bundle)
     if numeric is not None:
         sections.append(numeric.strip())
+    artifacts = render_artifacts_section(bundle)
+    if artifacts is not None:
+        sections.append(artifacts.strip())
     sections.extend(
         [
             "## Questions for the author",

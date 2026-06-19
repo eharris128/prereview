@@ -89,6 +89,33 @@ class Resolution(BaseModel):
     record: Optional[CanonicalRecord] = None
 
 
+class ArtifactStatus(str, Enum):
+    """Outcome of probing whether a claimed artifact (HF model/dataset, GitHub
+    repo) exists — the three-state shape of :class:`ResolutionStatus`, so a
+    transient outage is never laundered into a false "ghost artifact".
+
+    ``TERMINAL_MISS`` means the host authoritatively could not resolve it (404,
+    or — for Hugging Face's unauthenticated API — a 401/403 that means
+    not-found-or-not-public). ``TRANSIENT_FAIL`` means the check could not be
+    completed (rate limit, 5xx, timeout, or a 200 with an unparseable body) and
+    is disclosed as degradation, never as an author defect.
+    """
+
+    HIT = "hit"
+    TERMINAL_MISS = "terminal_miss"
+    TRANSIENT_FAIL = "transient_fail"
+
+
+class ArtifactCheck(BaseModel):
+    """Existence check for one artifact a paper claims (U7)."""
+
+    artifact_kind: str  # "hf_model" | "hf_dataset" | "github_repo"
+    identifier: str  # e.g. "google/bert" or "owner/repo"
+    url: str
+    status: ArtifactStatus
+    detail: str = ""
+
+
 class Citation(BaseModel):
     """An in-text citation: a sentence (or two) plus the reference it points to."""
 
@@ -323,6 +350,9 @@ class IngestedPaper(BaseModel):
     # are unchecked once the pack has run.
     numeric_checked: bool = False
     numeric_findings: list[NumericFinding] = Field(default_factory=list)
+    # Artifact existence checks (U7; populated by the pipeline only when --artifacts
+    # is on, hence not part of ingest). Empty by default.
+    artifact_checks: list[ArtifactCheck] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):
