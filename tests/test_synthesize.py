@@ -23,6 +23,7 @@ from prereview.models import (
     LinkCheck,
     NumericFinding,
     NumericFindingKind,
+    OpenReviewInfo,
     Reference,
     ReviewBundle,
     SubmissionFinding,
@@ -1110,3 +1111,32 @@ def test_methodology_qualifies_stats_bullet_once_numeric_ran():
 def test_methodology_keeps_stats_bullet_when_numeric_off():
     meth = syn.render_methodology(_numeric_bundle([], checked=False))
     assert "Reported statistics (no statcheck / GRIM-style audit)." in meth
+
+
+# ---------------------------------------------------------------------------
+# U8: OpenReview decision rendering
+
+
+def test_render_openreview_section_annotates_decision():
+    v = _v(Verdict.SUPPORTS, ref_id="found")
+    v.openreview = OpenReviewInfo(
+        decision="Reject", rating_avg=3.0, rating_count=4, url="https://openreview.net/forum?id=abc"
+    )
+    md = syn.render_openreview_section(_make_bundle([v]))
+    assert md is not None
+    assert "## OpenReview decisions" in md
+    assert "Reject" in md
+    assert "verify" in md.lower()  # advisory framing
+    assert "openreview.net/forum?id=abc" in md
+
+
+def test_render_openreview_none_when_no_enrichment():
+    assert syn.render_openreview_section(_make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])) is None
+
+
+def test_coverage_section_discloses_openreview_degradation():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport(openreview_degraded=True)
+    cov = syn.render_coverage_section(bundle)
+    assert cov is not None
+    assert "OpenReview enrichment could not be completed" in cov

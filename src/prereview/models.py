@@ -355,6 +355,20 @@ class IngestedPaper(BaseModel):
     artifact_checks: list[ArtifactCheck] = Field(default_factory=list)
 
 
+class OpenReviewInfo(BaseModel):
+    """OpenReview decision enrichment for a cited paper (U8).
+
+    Advisory only — surfaces what OpenReview recorded so the author can sanity-check
+    a citation (e.g. a paper cited as foundational that was actually rejected). Never
+    a defect verdict.
+    """
+
+    decision: Optional[str] = None  # e.g. "Accept (Poster)", "Reject"
+    rating_avg: Optional[float] = None
+    rating_count: int = 0
+    url: Optional[str] = None  # the OpenReview forum URL
+
+
 class VerificationResult(BaseModel):
     ref_id: str
     citation: Citation
@@ -364,6 +378,7 @@ class VerificationResult(BaseModel):
     rationale: str
     abstract_only: bool = False  # True if the verdict was based on abstract alone
     role: Optional[CitationRole] = None  # None for non-LLM verdicts (ghost, mismatch).
+    openreview: Optional[OpenReviewInfo] = None  # OpenReview decision enrichment (U8), when found
 
 
 class CoverageReport(BaseModel):
@@ -388,6 +403,9 @@ class CoverageReport(BaseModel):
     # a Reviewer-2-only failure must not claim the narrative sections degraded, and
     # it does not drive the exit-code-3 path.
     reviewer2_degraded: bool = False
+    # OpenReview enrichment (U8) could not complete (login/API failure). A no-creds
+    # skip is NOT degradation — the feature is simply off.
+    openreview_degraded: bool = False
     # Hard desk-reject blockers for ``--gate`` (U3): residual-identity (U2) plus
     # blocker-severity submission findings. Populated every run; the CLI only acts
     # on it (exit code 4, which outranks the coverage-gap exit 3) when ``--gate``

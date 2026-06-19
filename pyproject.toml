@@ -25,6 +25,11 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
 ]
+# OpenReview decision enrichment (U8, opt-in via --openreview). Kept optional so the
+# default install stays light and network-free; the feature degrades cleanly when absent.
+openreview = [
+    "openreview-py>=1.0.0",
+]
 
 [project.scripts]
 prereview = "prereview.cli:main"

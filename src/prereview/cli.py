@@ -104,6 +104,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-artifacts", dest="run_artifacts", action="store_false", help=argparse.SUPPRESS)
     p.set_defaults(run_artifacts=False)
     p.add_argument(
+        "--openreview",
+        dest="run_openreview",
+        action="store_true",
+        help=(
+            "Annotate cited papers with their OpenReview accept/reject decision and ratings "
+            "(network; opt-in, default off). Needs OPENREVIEW_USERNAME / OPENREVIEW_PASSWORD "
+            "and the optional openreview-py extra."
+        ),
+    )
+    p.add_argument("--no-openreview", dest="run_openreview", action="store_false", help=argparse.SUPPRESS)
+    p.set_defaults(run_openreview=False)
+    p.add_argument(
         "--venue",
         default=DEFAULT_VENUE,
         choices=sorted(VENUE_RULES),
@@ -226,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
                 show_rating=args.show_rating,
                 run_numeric=args.run_numeric,
                 run_artifacts=args.run_artifacts,
+                run_openreview=args.run_openreview,
                 verbose=args.verbose,
             )
         )
@@ -286,6 +299,8 @@ _DOTENV_KEYS = (
     "OPENALEX_API_KEY",
     "PREREVIEW_MAILTO",
     "HF_TOKEN",
+    "OPENREVIEW_USERNAME",
+    "OPENREVIEW_PASSWORD",
 )
 
 

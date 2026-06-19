@@ -636,6 +636,41 @@ def render_artifacts_section(bundle: ReviewBundle) -> Optional[str]:
     return "\n".join(out)
 
 
+def render_openreview_section(bundle: ReviewBundle) -> Optional[str]:
+    """Markdown for the OpenReview decisions section, or None when no cited paper
+    was enriched. Advisory enrichment — the title match is approximate, so each is
+    framed 'verify it's the right reference'; a rejected paper cited as foundational
+    is the case worth surfacing."""
+    seen: dict[str, VerificationResult] = {}
+    for v in bundle.verifications:
+        if v.openreview is not None and v.ref_id not in seen:
+            seen[v.ref_id] = v
+    if not seen:
+        return None
+    out: list[str] = ["## OpenReview decisions", ""]
+    out.append(
+        "Cited papers located on OpenReview, with the decision and rating recorded there. "
+        "Advisory enrichment — the lookup matches on title, so **verify it's the right "
+        "reference**, especially where a paper cited as foundational was rejected."
+    )
+    out.append("")
+    for ref_id, v in seen.items():
+        info = v.openreview
+        parts: list[str] = []
+        if info.decision:
+            parts.append(f"decision: **{info.decision}**")
+        if info.rating_avg is not None:
+            parts.append(f"avg rating {info.rating_avg} (n={info.rating_count})")
+        meta = "; ".join(parts) or "_(no decision/rating recorded)_"
+        title = (v.reference.title or ref_id).strip()
+        line = f"- `{ref_id}` — {title} — {meta}"
+        if info.url:
+            line += f" — [forum]({info.url})"
+        out.append(line)
+    out.append("")
+    return "\n".join(out)
+
+
 def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     """Coverage & reliability — the trust signal. Renders only when there is an
     infrastructure outcome to disclose (degradation, recovery, a tripped source, or a
@@ -650,16 +685,20 @@ def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     recovered = cov.recovered_after_retry if cov else 0
     broken = list(cov.circuit_broken_sources) if cov else []
     synth_degraded = bool(cov.synthesis_degraded) if cov else False
+    openreview_degraded = bool(cov.openreview_degraded) if cov else False
     artifact_degraded = [
         c for c in bundle.paper.artifact_checks if c.status == ArtifactStatus.TRANSIENT_FAIL
     ]
 
-    if not degraded and recovered == 0 and not broken and not synth_degraded and not artifact_degraded:
+    if (
+        not degraded and recovered == 0 and not broken and not synth_degraded
+        and not artifact_degraded and not openreview_degraded
+    ):
         return None  # nothing infrastructure-related to disclose
 
     resolved = total - ghost - len(degraded)
     lines = ["## Review coverage & reliability", ""]
-    if degraded or broken or synth_degraded or artifact_degraded:
+    if degraded or broken or synth_degraded or artifact_degraded or openreview_degraded:
         lines.append(
             "_Some parts of this review could not be completed due to infrastructure "
             "issues. The items below are **not** findings about your paper — re-running "
@@ -703,6 +742,11 @@ def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
             f"- {n} artifact existence check{'' if n == 1 else 's'} could not be completed "
             "(Hugging Face / GitHub unreachable after retries) — these are NOT missing "
             "artifacts; re-run to confirm."
+        )
+    if openreview_degraded:
+        lines.append(
+            "- OpenReview enrichment could not be completed (login or API failure); cited-paper "
+            "decisions were not annotated this run."
         )
     return "\n".join(lines) + "\n"
 
@@ -1276,6 +1320,9 @@ def stitch_review(
     artifacts = render_artifacts_section(bundle)
     if artifacts is not None:
         sections.append(artifacts.strip())
+    openreview = render_openreview_section(bundle)
+    if openreview is not None:
+        sections.append(openreview.strip())
     sections.extend(
         [
             "## Questions for the author",

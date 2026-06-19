@@ -60,6 +60,7 @@ async def run_pipeline(
     show_rating: bool = False,
     run_numeric: bool = True,
     run_artifacts: bool = False,
+    run_openreview: bool = False,
     verbose: bool = False,
 ) -> tuple[Path, CoverageReport]:
     cache = Cache(cache_dir) if cache_dir else Cache()
@@ -152,6 +153,18 @@ async def run_pipeline(
             )
             verifications.append(result)
 
+    openreview_degraded = False
+    if run_openreview:
+        _log(verbose, "Stage 3.5: enriching cited papers with OpenReview decisions")
+        from .openreview_enrich import enrich_with_openreview
+
+        _, openreview_degraded = await enrich_with_openreview(
+            verifications,
+            username=os.environ.get("OPENREVIEW_USERNAME"),
+            password=os.environ.get("OPENREVIEW_PASSWORD"),
+            verbose=verbose,
+        )
+
     abstract_only_count = sum(1 for v in verifications if v.abstract_only)
     fetched_full_text_count = sum(
         1 for v in verifications if not v.abstract_only and v.verdict != Verdict.TARGET_UNAVAILABLE
@@ -181,6 +194,7 @@ async def run_pipeline(
         recovered_after_retry=resolver.recovered_after_retry,
         circuit_broken_sources=resolver.circuit_broken_sources,
         gate_blockers=collect_gate_blockers(paper),
+        openreview_degraded=openreview_degraded,
     )
 
     bundle = ReviewBundle(

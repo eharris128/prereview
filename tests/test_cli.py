@@ -70,6 +70,31 @@ def test_main_threads_anonymize_args_to_pipeline(tmp_path: Path, monkeypatch):
     assert captured["authors"] == "Smith"
 
 
+def test_parser_openreview_default_off():
+    args = _build_parser().parse_args(["paper.tex"])
+    assert args.run_openreview is False
+
+
+def test_parser_openreview_flag_opts_in():
+    args = _build_parser().parse_args(["paper.tex", "--openreview"])
+    assert args.run_openreview is True
+
+
+def test_openreview_creds_autoloaded_from_env(tmp_path: Path, monkeypatch):
+    for k in ("OPENREVIEW_USERNAME", "OPENREVIEW_PASSWORD"):
+        assert k in _DOTENV_KEYS
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("OPENREVIEW_USERNAME=u@x.com\nOPENREVIEW_PASSWORD=secret\n")
+    inp = tmp_path / "paper.tex"
+    inp.write_text("x")
+    _autoload_env(inp)
+    assert os.environ.get("OPENREVIEW_USERNAME") == "u@x.com"
+    assert os.environ.get("OPENREVIEW_PASSWORD") == "secret"
+    for k in ("OPENREVIEW_USERNAME", "OPENREVIEW_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+
 def test_parser_artifacts_default_off():
     args = _build_parser().parse_args(["paper.tex"])
     assert args.run_artifacts is False
