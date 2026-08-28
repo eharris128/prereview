@@ -323,3 +323,144 @@ def test_cli_exit_1_clean_message_no_traceback(tmp_path: Path, monkeypatch, caps
     err = capsys.readouterr().err
     assert "Traceback" not in err
     assert "prereview: failed" in err and "kaboom" in err
+
+
+# ---------------------------------------------------------------------------
+# --auth credential selection
+#
+# `with-keys` injects ANTHROPIC_API_KEY *and* CLAUDE_CODE_OAUTH_TOKEN on every run,
+# so which one wins — and whether a token without the [oauth] extra installed can
+# select a backend that would die at the first model call — is the whole game here.
+
+
+@pytest.fixture
+def _auth_env(monkeypatch, tmp_path: Path):
+    """A clean credential environment plus a stubbed pipeline.
+
+    Returns a callable: run(*argv) -> the backend `main` settled on.
+    """
+    from prereview import cli, llm
+    from prereview.models import CoverageReport
+
+    original = llm.get_backend()
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    out = tmp_path / "p.review.md"
+
+    async def fake_run(*a, **kw):
+        out.write_text("# review\n")
+        return out, CoverageReport()
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    tex = tmp_path / "p.tex"
+    tex.write_text(r"\documentclass{article}")
+    # A .env beside the input must not smuggle real credentials into the test.
+    (tmp_path / ".env").write_text("")
+
+    def run(*argv: str) -> str:
+        main([str(tex), *argv])
+        return llm.get_backend()
+
+    yield run
+    llm.set_backend(original)
+
+
+def _sdk(monkeypatch, *, available: bool) -> None:
+    from prereview import llm_agent_sdk
+
+    monkeypatch.setattr(llm_agent_sdk, "sdk_importable", lambda: available)
+    monkeypatch.setattr(llm_agent_sdk, "cli_on_path", lambda: available)
+
+
+def test_auth_defaults_to_auto():
+    assert _build_parser().parse_args(["paper.tex"]).auth == "auto"
+
+
+def test_auto_prefers_oauth_when_usable(monkeypatch, _auth_env):
+    from prereview import llm
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=True)
+    assert _auth_env() == llm.BACKEND_AGENT_SDK
+
+
+def test_auto_falls_back_to_api_key_when_sdk_missing(monkeypatch, _auth_env):
+    """The reason auto checks availability and not just the env var: an install
+    without the [oauth] extra would otherwise pick a backend that cannot run."""
+    from prereview import llm
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=False)
+    assert _auth_env() == llm.BACKEND_LITELLM
+
+
+def test_auto_errors_when_token_set_but_unusable_and_no_key(monkeypatch, _auth_env):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=False)
+    with pytest.raises(SystemExit):
+        _auth_env()
+
+
+def test_auto_errors_with_no_credentials(monkeypatch, _auth_env):
+    _sdk(monkeypatch, available=True)
+    with pytest.raises(SystemExit):
+        _auth_env()
+
+
+def test_explicit_api_key_ignores_an_available_oauth_token(monkeypatch, _auth_env):
+    from prereview import llm
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=True)
+    assert _auth_env("--auth", "api-key") == llm.BACKEND_LITELLM
+
+
+def test_explicit_oauth_ignores_an_api_key(monkeypatch, _auth_env):
+    from prereview import llm
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=True)
+    assert _auth_env("--auth", "oauth") == llm.BACKEND_AGENT_SDK
+
+
+def test_explicit_oauth_does_not_fall_back(monkeypatch, _auth_env, capsys):
+    """Unlike auto, --auth oauth must fail loudly rather than quietly bill the API."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=False)
+    with pytest.raises(SystemExit):
+        _auth_env("--auth", "oauth")
+    assert "[oauth]" in capsys.readouterr().err
+
+
+def test_explicit_oauth_works_without_a_token_env_var(monkeypatch, _auth_env):
+    """An interactive `claude login` is a working OAuth credential with no env var
+    set, so --auth oauth must not demand one; the CLI is the authority on whether
+    it can authenticate. (auto still requires the explicit token -- see above.)"""
+    from prereview import llm
+
+    _sdk(monkeypatch, available=True)
+    assert _auth_env("--auth", "oauth") == llm.BACKEND_AGENT_SDK
+
+
+def test_explicit_api_key_without_key_errors(monkeypatch, _auth_env, capsys):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "t")
+    _sdk(monkeypatch, available=True)
+    with pytest.raises(SystemExit):
+        _auth_env("--auth", "api-key")
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+
+
+def test_oauth_token_autoloaded_from_env_file(tmp_path: Path, monkeypatch):
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in _DOTENV_KEYS
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("CLAUDE_CODE_OAUTH_TOKEN=oat-secret\n")
+    _autoload_env(tmp_path / "p.tex")
+    assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") == "oat-secret"
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)

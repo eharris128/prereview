@@ -1,8 +1,14 @@
-"""Thin LLM helper wrapping litellm.acompletion.
+"""Thin LLM helper over one of two credential paths.
 
 Reasons for a wrapper:
   - Centralize JSON-output parsing so every caller doesn't reinvent it.
   - Easy to mock in tests via monkeypatch.
+  - One place to choose the backend, so the four ``acompletion_json`` call sites
+    (ingest, verify, synthesize x2) never care which credential is in play.
+
+Backends: ``litellm`` (default) calls the Anthropic API with ``ANTHROPIC_API_KEY``;
+``agent-sdk`` drives the Claude Code CLI with a ``CLAUDE_CODE_OAUTH_TOKEN`` so spend
+lands on a Claude subscription instead. See ``llm_agent_sdk``.
 """
 
 from __future__ import annotations
@@ -11,6 +17,24 @@ import json
 import re
 import sys
 from typing import Any, Optional
+
+
+# Which credential path this run uses. Set once by the CLI before the pipeline
+# starts; module-level because every call site shares the one process-wide choice.
+BACKEND_LITELLM = "litellm"
+BACKEND_AGENT_SDK = "agent-sdk"
+_BACKEND = BACKEND_LITELLM
+
+
+def set_backend(name: str) -> None:
+    global _BACKEND
+    if name not in (BACKEND_LITELLM, BACKEND_AGENT_SDK):
+        raise ValueError(f"unknown LLM backend: {name!r}")
+    _BACKEND = name
+
+
+def get_backend() -> str:
+    return _BACKEND
 
 
 # Some Anthropic models (e.g. Opus 4.7 with adaptive thinking) reject the
@@ -49,6 +73,21 @@ async def acompletion_text(
     max_tokens: int = 4096,
     verbose: bool = False,
 ) -> str:
+    if _BACKEND == BACKEND_AGENT_SDK:
+        # Lazy: claude-agent-sdk is an optional extra, so importing it at module
+        # scope would break the default install. temperature/max_tokens have no
+        # ClaudeAgentOptions equivalent and are dropped on this path.
+        from .llm_agent_sdk import agent_sdk_text
+
+        return await agent_sdk_text(
+            model=model,
+            user=user,
+            system=system,
+            num_retries=_LLM_NUM_RETRIES,
+            timeout_s=_LLM_TIMEOUT_S,
+            verbose=verbose,
+        )
+
     from litellm import acompletion  # imported lazily so tests can monkeypatch
 
     messages: list[dict[str, str]] = []

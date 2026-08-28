@@ -31,6 +31,35 @@ Output: `path/to/draft.review.md`.
 
 The CLI auto-loads `.env` from the project root, the input file's directory, and the current working directory — set keys there once and forget about them.
 
+### Credentials
+
+Either an Anthropic API key or a Claude Code OAuth token works:
+
+```bash
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env          # metered API credits
+echo "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat..." > .env  # Claude subscription
+```
+
+The OAuth path runs every model call through the Claude Code CLI via the
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), so it needs the optional
+extra and the `claude` CLI on `PATH`:
+
+```bash
+uv pip install -e ".[oauth]"
+claude --version            # must resolve
+prereview draft.tex --auth oauth
+```
+
+`--auth oauth` does not require the token variable at all — the CLI authenticates
+from `$CLAUDE_CODE_OAUTH_TOKEN` *or* an interactive `claude login`, so a machine
+already logged into Claude Code needs no token minted. `--auth auto` (the default) is
+stricter: it picks the OAuth path only when `$CLAUDE_CODE_OAUTH_TOKEN` is set *and*
+the path is usable (SDK importable, CLI present), otherwise falling back to
+`ANTHROPIC_API_KEY` — so the backend never flips on the strength of a stored login you
+forgot about. Pin one explicitly with `--auth oauth` / `--auth api-key`; that matters
+when both variables are set, which is common under secret-injection wrappers. Spend on the OAuth path counts against Claude Code subscription limits, and
+a review is one model call per citation plus three — a 50-reference paper is 50+ calls.
+
 If a Semantic Scholar API key is available, set `S2_API_KEY` for higher rate limits. Set `PREREVIEW_MAILTO` (or pass `--mailto`) to a real email address to join the polite pools at Crossref / OpenAlex / Unpaywall. Neither is required.
 
 ### Two input modes
@@ -56,6 +85,12 @@ prereview <paper.pdf> [options]
                            Default: anthropic/claude-sonnet-4-6
   --synthesis-model NAME   Model for the final review-writing pass.
                            Default: anthropic/claude-opus-4-7
+  --auth {auto,api-key,oauth}
+                           Credential path. 'oauth' drives the Claude Code CLI
+                           ($CLAUDE_CODE_OAUTH_TOKEN or `claude login`);
+                           'api-key' calls the Anthropic API with
+                           $ANTHROPIC_API_KEY. Default: auto (oauth only when
+                           the token var is set and usable).
   --no-fetch-cited         Skip downloading PDFs of cited works. Faster but
                            verifications fall back to abstract-only.
   --cache-dir PATH         Where to cache resolved references and fetched PDFs.
@@ -76,7 +111,10 @@ prereview <paper.pdf> [options]
 - The LLM is allowed to abstain. *Abstract too thin to tell* is a first-class verdict, not papered over.
 - Canonical citation metadata (title, authors, year, DOI) only ever comes from Crossref / Semantic Scholar / arXiv / OpenAlex. The LLM is only allowed to judge whether retrieved text supports a claim.
 - The rating is a range with a one-sentence justification, explicitly labeled as an LLM rating. No conformal calibration.
-- Anthropic only. Single API key.
+- Anthropic only, but either credential: a metered API key or a Claude Code OAuth
+  token. The OAuth backend pins `setting_sources=[]` and an empty tool set so the
+  Claude Code harness (CLAUDE.md, project settings, MCP servers, tools) can never
+  leak into a verification prompt and steer a verdict.
 
 ## License
 

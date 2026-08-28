@@ -25,6 +25,12 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
 ]
+# Claude Code OAuth auth path (opt-in via --auth oauth). Kept optional so the
+# default install stays light: the SDK pulls in mcp/jsonschema/anyio, and the
+# feature additionally needs the `claude` CLI on PATH.
+oauth = [
+    "claude-agent-sdk>=0.2.147",
+]
 # OpenReview decision enrichment (U8, opt-in via --openreview). Kept optional so the
 # default install stays light and network-free; the feature degrades cleanly when absent.
 openreview = [

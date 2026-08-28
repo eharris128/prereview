@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import DEFAULT_MODEL, DEFAULT_SYNTHESIS_MODEL, __version__
 from .cache import DEFAULT_CACHE_DIR
+from .llm import BACKEND_AGENT_SDK, BACKEND_LITELLM, set_backend
 from .pipeline import run_pipeline
 from .venue_rules import DEFAULT_VENUE, VENUE_RULES
 
@@ -178,6 +179,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "Defaults to $PREREVIEW_MAILTO if set."
         ),
     )
+    p.add_argument(
+        "--auth",
+        choices=("auto", "api-key", "oauth"),
+        default="auto",
+        help=(
+            "Credential path. 'oauth' drives the Claude Code CLI, which authenticates "
+            "from $CLAUDE_CODE_OAUTH_TOKEN or an interactive `claude login` (spend "
+            "counts against a Claude subscription; needs the [oauth] extra and the "
+            "`claude` CLI). 'api-key' calls the Anthropic API with $ANTHROPIC_API_KEY. "
+            "'auto' (default) picks oauth only when $CLAUDE_CODE_OAUTH_TOKEN is set "
+            "and usable, else the API key."
+        ),
+    )
     p.add_argument("--verbose", action="store_true", help="Log every retrieval and verification step to stderr.")
     p.add_argument("--version", action="version", version=f"prereview {__version__}")
     return p
@@ -207,11 +221,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _autoload_env(pdf_path)
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        parser.error(
-            "ANTHROPIC_API_KEY is not set. Export it, or place it in a .env file "
-            "next to the input or in the project root."
-        )
+    set_backend(_resolve_auth(args.auth, parser))
 
     try:
         out_path, report = asyncio.run(
@@ -293,8 +303,58 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+_ENV_HINT = (
+    "Export it, or place it in a .env file next to the input or in the project root."
+)
+
+
+def _resolve_auth(choice: str, parser: argparse.ArgumentParser) -> str:
+    """Pick the credential path, or exit with an actionable message.
+
+    ``auto`` prefers OAuth but only when the path is actually usable: ``with-keys``
+    injects both variables on every run, so a token in the environment is not on its
+    own evidence that the Agent SDK and the ``claude`` CLI are installed. Explicit
+    ``--auth oauth`` skips that fallback and fails loudly instead.
+    """
+    from . import llm_agent_sdk
+
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_token = bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+
+    if choice == "api-key":
+        if not has_key:
+            parser.error(f"--auth api-key needs ANTHROPIC_API_KEY. {_ENV_HINT}")
+        return BACKEND_LITELLM
+
+    if choice == "oauth":
+        # Deliberately does not require CLAUDE_CODE_OAUTH_TOKEN: the CLI resolves
+        # credentials itself, and an interactive `claude login` is a working OAuth
+        # credential with no env var in sight. Let the CLI be the authority on
+        # whether it can authenticate; we only check that it is there to ask.
+        reason = llm_agent_sdk.unavailable_reason()
+        if reason is not None:
+            parser.error(f"--auth oauth is unavailable: {reason}")
+        return BACKEND_AGENT_SDK
+
+    if has_token and llm_agent_sdk.agent_sdk_available():
+        return BACKEND_AGENT_SDK
+    if has_key:
+        return BACKEND_LITELLM
+    if has_token:
+        parser.error(
+            "CLAUDE_CODE_OAUTH_TOKEN is set but the OAuth path is unavailable: "
+            f"{llm_agent_sdk.unavailable_reason()}\n"
+            f"Set ANTHROPIC_API_KEY to use the API instead. {_ENV_HINT}"
+        )
+    parser.error(
+        "no Anthropic credentials found. Set CLAUDE_CODE_OAUTH_TOKEN (Claude "
+        f"subscription, needs the [oauth] extra) or ANTHROPIC_API_KEY. {_ENV_HINT}"
+    )
+
+
 _DOTENV_KEYS = (
     "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "S2_API_KEY",
     "OPENALEX_API_KEY",
     "PREREVIEW_MAILTO",
