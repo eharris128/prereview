@@ -26,7 +26,7 @@ from typing import Optional
 
 from .llm import acompletion_json
 from .models import Citation, IngestedPaper, Reference
-from .venue_rules import audit_submission_pdf, get_rules
+from .venue_rules import DEFAULT_VENUE, audit_submission_pdf, get_rules
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -383,7 +383,7 @@ async def ingest_pdf(
     *,
     model: str,
     verbose: bool = False,
-    venue: str = "aaai-27",
+    venue: Optional[str] = DEFAULT_VENUE,
 ) -> IngestedPaper:
     pages = page_texts(pdf_path)
     text = _clean_extracted("\n".join(pages))
@@ -398,8 +398,9 @@ async def ingest_pdf(
     _log(verbose, f"found {len(citations)} in-text citations")
 
     refs_start = find_references_start_page(pages)
+    rules = get_rules(venue)  # None → no venue selected; the PDF checks are all venue-specific
     submission_findings = audit_submission_pdf(
-        get_rules(venue),
+        rules,
         title=title,
         page_count=len(pages),
         references_start_page=refs_start,
@@ -412,6 +413,6 @@ async def ingest_pdf(
         citations=citations,
         page_count=len(pages),
         references_start_page=refs_start,
-        submission_checked=True,
+        submission_checked=rules is not None,
         submission_findings=submission_findings,
     )

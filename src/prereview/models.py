@@ -237,9 +237,11 @@ class AnonymizationFinding(BaseModel):
 class SubmissionFindingKind(str, Enum):
     """A mechanical, desk-reject-eligible submission problem (U3).
 
-    These map to the AAAI rules a paper is summarily rejected for tripping:
-    over-length, a placeholder/empty/changed title or abstract, a color-coded
-    result table, or an incomplete reproducibility checklist.
+    These map to the venue rules a paper is summarily rejected for tripping
+    (originally modelled on AAAI-27; per-venue facts live in
+    ``venue_rules.VENUE_RULES``): over-length, a placeholder/empty/changed title
+    or abstract, a color-coded result table, or an incomplete reproducibility
+    checklist.
     """
 
     OVER_LENGTH = "over_length"

@@ -54,7 +54,7 @@ async def run_pipeline(
     run_checklist: bool = True,
     run_anonymize: bool = True,
     authors: Optional[str] = None,
-    venue: str = DEFAULT_VENUE,
+    venue: Optional[str] = DEFAULT_VENUE,
     abstract_baseline: Optional[Path] = None,
     run_reviewer2: bool = True,
     show_rating: bool = False,

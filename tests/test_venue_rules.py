@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from prereview.models import (
     AnonymizationFinding,
     AnonymizationFindingKind,
@@ -19,7 +21,10 @@ from prereview.models import (
     SubmissionSeverity,
 )
 from prereview.venue_rules import (
+    DEFAULT_VENUE,
     VENUE_RULES,
+    VenueRules,
+    audit_submission_pdf,
     audit_submission_tex,
     check_changed_abstract,
     check_checklist_completeness,
@@ -31,7 +36,21 @@ from prereview.venue_rules import (
     get_rules,
 )
 
-RULES = get_rules("aaai-27")
+# A synthetic venue carrying the values the (since-removed) AAAI-27 entry had, so the
+# detector contracts below stay pinned to concrete numbers.
+RULES = VenueRules(
+    venue_id="test-venue",
+    page_limit_technical=7,
+    references_excluded=True,
+    requires_abstract=True,
+    min_abstract_words=20,
+    checklist_required=True,
+    placeholder_markers=(
+        "type your", "todo", "tbd", "lorem ipsum", "xxx", "goes here", "placeholder",
+        "your title here", "your abstract here", "fixme", "title here", "abstract here",
+    ),
+    color_table_macros=(r"\cellcolor", r"\rowcolor", r"\columncolor", r"\colorbox", r"\textcolor"),
+)
 _K = SubmissionFindingKind
 _S = SubmissionSeverity
 
@@ -233,6 +252,54 @@ def test_collect_gate_blockers_empty_when_clean():
     assert collect_gate_blockers(IngestedPaper()) == []
 
 
-def test_aaai27_rules_present():
-    assert "aaai-27" in VENUE_RULES
-    assert VENUE_RULES["aaai-27"].page_limit_technical == 7
+# ---------------------------------------------------------------------------
+# venue table / no-venue path
+
+
+def test_default_venue_is_none_and_aaai27_is_gone():
+    # AAAI-27 was removed on 2026-08-28 after its deadline passed; the guard is now
+    # opt-in per venue and nothing is configured until the next target is added.
+    assert DEFAULT_VENUE is None
+    assert "aaai-27" not in VENUE_RULES
+
+
+def test_get_rules_none_returns_none():
+    assert get_rules(None) is None
+
+
+def test_get_rules_unknown_venue_raises_naming_it():
+    with pytest.raises(ValueError, match="unknown venue 'nope-99'"):
+        get_rules("nope-99")
+
+
+def test_get_rules_configured_venue(monkeypatch):
+    monkeypatch.setitem(VENUE_RULES, "test-venue", RULES)
+    assert get_rules("test-venue") is RULES
+
+
+def test_audit_tex_without_venue_runs_only_abstract_diff(tmp_path: Path):
+    baseline = tmp_path / "abstract.txt"
+    baseline.write_text("Our method reaches 91.2 accuracy on the benchmark.")
+    tex = r"""\title{}
+\begin{tabular}{l}\rowcolor{gray} x \\\end{tabular}
+"""
+    findings = audit_submission_tex(
+        None, title="", abstract="Our method reaches 95.8 accuracy on the benchmark.",
+        tex_text=tex, checklist_found=True,
+        checklist_findings=[ChecklistFinding(kind=ChecklistFindingKind.UNANSWERED, question="Q?")],
+        abstract_baseline=baseline,
+    )
+    # Empty title, color table, and the unanswered checklist item all need a venue;
+    # only the venue-independent changed-abstract diff fires.
+    assert [f.kind for f in findings] == [_K.CHANGED_ABSTRACT]
+
+
+def test_audit_tex_without_venue_and_no_baseline_is_empty():
+    assert audit_submission_tex(
+        None, title="", abstract="", tex_text=r"\rowcolor{gray}",
+        checklist_found=False, checklist_findings=[], abstract_baseline=None,
+    ) == []
+
+
+def test_audit_pdf_without_venue_is_empty():
+    assert audit_submission_pdf(None, title="", page_count=40, references_start_page=39) == []

@@ -689,6 +689,42 @@ def test_render_submission_groups_blockers_and_warnings():
     assert "approximately 9 pages" in md
 
 
+def _changed_abstract_finding():
+    return SubmissionFinding(
+        kind=SubmissionFindingKind.CHANGED_ABSTRACT, severity=SubmissionSeverity.BLOCKER,
+        detail="the abstract has changed substantially from the recorded baseline — verify",
+    )
+
+
+def test_render_submission_renders_venue_independent_findings_when_not_checked():
+    # No --venue, but --abstract-baseline fired: the section must still surface it.
+    md = syn.render_submission_section(
+        _submission_bundle(checked=False, findings=[_changed_abstract_finding()])
+    )
+    assert md is not None
+    assert "No `--venue` was selected" in md
+    assert "Blockers (1)" in md
+    assert "changed substantially" in md
+
+
+def test_render_methodology_discloses_no_venue_selected():
+    md = syn.render_methodology(_submission_bundle(checked=False))
+    assert "No venue was selected" in md
+    assert "Submission-readiness checks ran" not in md
+
+
+def test_render_methodology_no_venue_counts_abstract_diff():
+    md = syn.render_methodology(
+        _submission_bundle(checked=False, findings=[_changed_abstract_finding()])
+    )
+    assert "abstract-baseline diff flagged 1 issue(s)" in md
+
+
+def test_render_methodology_with_venue_keeps_ran_line():
+    md = syn.render_methodology(_submission_bundle(checked=True))
+    assert "Submission-readiness checks ran against the venue rules: no desk-reject issues flagged" in md
+
+
 def test_stitch_orders_desk_reject_guards_then_summary():
     paper = IngestedPaper(
         title="A Paper", references={}, citations=[],
