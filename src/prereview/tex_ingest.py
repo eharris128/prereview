@@ -699,7 +699,7 @@ async def ingest_tex(
     run_checklist: bool = True,
     run_anonymize: bool = True,
     authors: Optional[str] = None,
-    venue: str = DEFAULT_VENUE,
+    venue: Optional[str] = DEFAULT_VENUE,
     abstract_baseline: Optional[Path] = None,
     run_numeric: bool = True,
 ) -> IngestedPaper:
@@ -787,8 +787,9 @@ async def ingest_tex(
         )
         _log(verbose, f"anonymization audit: {len(anonymization_findings)} finding(s)")
 
+    rules = get_rules(venue)  # None → no venue selected; only the abstract-baseline diff runs
     submission_findings: list[SubmissionFinding] = audit_submission_tex(
-        get_rules(venue),
+        rules,
         title=title,
         abstract=abstract,
         tex_text=tex_text,
@@ -796,7 +797,11 @@ async def ingest_tex(
         checklist_findings=checklist_findings,
         abstract_baseline=abstract_baseline,
     )
-    _log(verbose, f"submission-readiness guard: {len(submission_findings)} finding(s)")
+    _log(
+        verbose,
+        f"submission-readiness guard ({rules.venue_id if rules else 'no venue selected'}): "
+        f"{len(submission_findings)} finding(s)",
+    )
 
     numeric_findings: list[NumericFinding] = []
     if run_numeric:
@@ -819,7 +824,7 @@ async def ingest_tex(
         section_titles=section_titles,
         anonymization_checked=anonymization_checked,
         anonymization_findings=anonymization_findings,
-        submission_checked=True,
+        submission_checked=rules is not None,
         submission_findings=submission_findings,
         numeric_checked=run_numeric,
         numeric_findings=numeric_findings,

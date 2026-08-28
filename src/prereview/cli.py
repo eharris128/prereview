@@ -14,6 +14,15 @@ from .pipeline import run_pipeline
 from .venue_rules import DEFAULT_VENUE, VENUE_RULES
 
 
+def _venue_arg(value: str) -> str:
+    """argparse ``type`` for ``--venue``: validate against the (possibly empty) venue
+    table at parse time so an unknown id is a usage error (exit 2), not a traceback."""
+    if value not in VENUE_RULES:
+        known = ", ".join(sorted(VENUE_RULES)) or "none"
+        raise argparse.ArgumentTypeError(f"unknown venue {value!r} (configured venues: {known})")
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="prereview",
@@ -41,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--checklist",
         type=Path,
         default=None,
-        help="(.tex mode only) Explicit path to a reproducibility checklist .tex (AAAI-27). Default: auto-detect from \\input{...} or sibling ReproducibilityChecklist.tex.",
+        help="(.tex mode only) Explicit path to a reproducibility checklist .tex (AAAI-27 kit format). Default: auto-detect from \\input{...} or sibling ReproducibilityChecklist.tex.",
     )
     p.add_argument(
         "--no-checklist",
@@ -117,18 +126,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(run_openreview=False)
     p.add_argument(
         "--venue",
+        type=_venue_arg,
         default=DEFAULT_VENUE,
-        choices=sorted(VENUE_RULES),
-        help=f"Venue whose submission rules to check against. Default: {DEFAULT_VENUE}.",
+        metavar="ID",
+        help=(
+            "Venue whose submission rules to check against (desk-reject guard). "
+            f"Configured venues: {', '.join(sorted(VENUE_RULES)) or 'none'}. "
+            "Default: none — venue-specific checks are skipped."
+        ),
     )
     p.add_argument(
         "--gate",
         action="store_true",
         help=(
-            "Exit non-zero (code 4) if a hard desk-reject blocker is found (residual "
-            "identity, placeholder/empty/changed title or abstract, color result table, "
-            "unanswered mandatory checklist item, or — PDF only — over-length). Default: "
-            "advisory only, exit code unchanged."
+            "Exit non-zero (code 4) if a hard desk-reject blocker is found: residual "
+            "author identity (anonymization audit), a substantially changed abstract "
+            "(--abstract-baseline), or a blocker from the selected --venue rules "
+            "(placeholder/empty title or abstract, color result table, unanswered "
+            "mandatory checklist item, or — PDF only — over-length). Default: advisory "
+            "only, exit code unchanged."
         ),
     )
     p.add_argument(
@@ -138,14 +154,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "(.tex mode only) Snapshot the abstract to PATH on first run, then flag on "
-            "later runs if it has changed substantially (AAAI two-deadline guard)."
+            "later runs if it has changed substantially — guards venues that reject a "
+            "final abstract diverging from the registered one. Runs with or without --venue."
         ),
     )
     p.add_argument(
         "--out",
         type=Path,
         default=None,
-        help="Output Markdown path. Default: <pdf-stem>.review.md next to the PDF.",
+        help="Output Markdown path. Default: <input-stem>.review.md next to the input.",
     )
     p.add_argument(
         "--model",

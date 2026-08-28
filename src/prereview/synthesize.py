@@ -529,7 +529,7 @@ def render_anonymization_section(bundle: ReviewBundle) -> Optional[str]:
 
 def render_submission_section(bundle: ReviewBundle) -> Optional[str]:
     """Markdown for the Submission readiness (desk-reject guard) section, or None
-    when the guard did not run.
+    when no venue was selected and the venue-independent abstract diff was quiet.
 
     Like the anonymization audit, this is a desk-reject guard that renders even on
     a clean run (a positive "you won't be desk-rejected for these" confirmation is
@@ -537,10 +537,10 @@ def render_submission_section(bundle: ReviewBundle) -> Optional[str]:
     advisory unless ``--gate`` is passed.
     """
     paper = bundle.paper
-    if not paper.submission_checked:
+    findings = paper.submission_findings
+    if not paper.submission_checked and not findings:
         return None
 
-    findings = paper.submission_findings
     out: list[str] = ["## Submission readiness (desk-reject guard)", ""]
     if not findings:
         out.append(
@@ -552,11 +552,18 @@ def render_submission_section(bundle: ReviewBundle) -> Optional[str]:
         out.append("")
         return "\n".join(out)
 
-    out.append(
-        "Mechanical checks against the venue's submission rules. **Blockers** are "
-        "desk-reject-eligible; **warnings** are approximate and worth a manual look. "
-        "All are advisory unless you pass `--gate`."
-    )
+    if paper.submission_checked:
+        out.append(
+            "Mechanical checks against the venue's submission rules. **Blockers** are "
+            "desk-reject-eligible; **warnings** are approximate and worth a manual look. "
+            "All are advisory unless you pass `--gate`."
+        )
+    else:
+        out.append(
+            "No `--venue` was selected, so only the venue-independent `--abstract-baseline` "
+            "diff ran. **Blockers** are desk-reject-eligible; **warnings** are approximate "
+            "and worth a manual look. All are advisory unless you pass `--gate`."
+        )
     out.append("")
     blockers = [f for f in findings if f.severity == SubmissionSeverity.BLOCKER]
     warnings = [f for f in findings if f.severity == SubmissionSeverity.WARNING]
@@ -777,13 +784,19 @@ def render_methodology(bundle: ReviewBundle) -> str:
     if bundle.paper.checklist_found:
         # 4-space indent + blank line so it dedents uniformly with the template below.
         hygiene_line += "\n\n    " + _checklist_methodology_sentence(bundle)
+    n_sub = len(bundle.paper.submission_findings)
     if bundle.paper.submission_checked:
-        n_sub = len(bundle.paper.submission_findings)
         hygiene_line += "\n\n    " + (
             f"Submission-readiness checks ran against the venue rules: {n_sub} issue(s) flagged "
             "(length, placeholder/abstract-diff, color tables, checklist completeness)."
             if n_sub
             else "Submission-readiness checks ran against the venue rules: no desk-reject issues flagged."
+        )
+    else:
+        hygiene_line += "\n\n    " + (
+            "No venue was selected (`--venue`), so venue-specific submission-readiness "
+            "desk-reject checks did not run."
+            + (f" The abstract-baseline diff flagged {n_sub} issue(s)." if n_sub else "")
         )
     # Once the numerical-sanity pack (U6) has run, the blanket "does not check
     # reported statistics" promise is no longer true — qualify it to what the pack

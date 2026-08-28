@@ -475,7 +475,18 @@ async def test_pipeline_reports_degraded_coverage(tmp_path: Path, monkeypatch):
 @pytest.mark.asyncio
 async def test_pipeline_computes_gate_blockers_from_submission(tmp_path: Path, monkeypatch):
     """run_pipeline populates coverage.gate_blockers from the U2/U3 findings so the
-    CLI can apply --gate precedence (4 > 3 > 0)."""
+    CLI can apply --gate precedence (4 > 3 > 0). Venue-specific blockers need a
+    configured venue, so one is injected for the test."""
+    from prereview.venue_rules import VENUE_RULES, VenueRules
+
+    monkeypatch.setitem(
+        VENUE_RULES, "test-venue",
+        VenueRules(
+            venue_id="test-venue", page_limit_technical=7, references_excluded=True,
+            requires_abstract=True, min_abstract_words=20, checklist_required=True,
+            placeholder_markers=("todo",), color_table_macros=(),
+        ),
+    )
     (tmp_path / "references.bib").write_text("@article{x, author={A}, title={t}, year={2023}}\n")
     tex = tmp_path / "paper.tex"
     tex.write_text(
@@ -497,10 +508,41 @@ Body text here with plenty of words so the section is not empty at all.
 
     _, report = await pipeline.run_pipeline(
         tex, out=tmp_path / "paper.review.md", model="m", synthesis_model="s",
-        fetch_cited=False, cache_dir=tmp_path / "cache",
+        fetch_cited=False, cache_dir=tmp_path / "cache", venue="test-venue",
     )
     # Empty \title{} is a hard desk-reject blocker that reaches gate_blockers.
     assert any("title is empty" in b for b in report.gate_blockers)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_no_venue_yields_no_submission_blockers(tmp_path: Path, monkeypatch):
+    """Default run (no --venue): the empty \title{} is NOT a gate blocker, because every
+    venue-specific check is skipped until a venue is selected."""
+    (tmp_path / "references.bib").write_text("@article{x, author={A}, title={t}, year={2023}}\n")
+    tex = tmp_path / "paper.tex"
+    tex.write_text(
+        r"""\documentclass{article}
+\title{}
+\begin{document}
+\section{Intro}
+Body text here with plenty of words so the section is not empty at all.
+\end{document}
+"""
+    )
+
+    async def fake_synth(bundle, *, verbose=False, **_kw):
+        assert bundle.paper.submission_checked is False
+        return "# review\n"
+
+    monkeypatch.setattr(pipeline, "Resolver", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "Verifier", _NoOpCtx)
+    monkeypatch.setattr(pipeline, "synthesize_review", fake_synth)
+
+    _, report = await pipeline.run_pipeline(
+        tex, out=tmp_path / "paper.review.md", model="m", synthesis_model="s",
+        fetch_cited=False, cache_dir=tmp_path / "cache",
+    )
+    assert report.gate_blockers == []
 
 
 @pytest.mark.asyncio

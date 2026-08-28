@@ -1,6 +1,6 @@
-"""Submission-readiness / venue-rules guard (AAAI-27 first).
+"""Submission-readiness / venue-rules guard.
 
-Why this exists: AAAI summarily desk-rejects papers for mechanically-detectable
+Why this exists: many venues summarily desk-reject papers for mechanically-detectable
 problems — over-length technical content, a placeholder or changed title/abstract,
 a color-coded result table, or an incomplete reproducibility checklist. Catching
 these before submission is pure expected value: a tripped rule means acceptance
@@ -8,9 +8,16 @@ probability zero regardless of quality.
 
 Design (KTD-2): the *detectors are generic* and the *per-venue facts are data*
 (:data:`VENUE_RULES`), the same "generic parser, venue-specific data" decision the
-checklist linter made — adding NeurIPS/ACL later is data, not code. Everything is
+checklist linter made — adding a venue is data, not code. Everything is
 deterministic and advisory; only ``BLOCKER``-severity findings change the exit code,
 and only under ``--gate`` (KTD-8).
+
+The table is keyed by the id passed as ``--venue``. With no venue selected (the
+default, and the only option while the table is empty) the venue-specific detectors
+do not run; the one venue-independent check — the ``--abstract-baseline``
+snapshot/diff — still does. The original AAAI-27 entry was removed on 2026-08-28
+after that deadline passed; ``git show 99b1e3e:src/prereview/venue_rules.py`` has
+it as a template for the next target venue.
 
 Length is PDF-only and approximate (KTD-4): two-column references routinely start
 mid-page, so the technical-page count is ±1. When the references boundary is not
@@ -54,46 +61,28 @@ class VenueRules:
     min_abstract_words: int  # below this, a non-empty abstract reads as a placeholder
     checklist_required: bool
     placeholder_markers: tuple[str, ...]  # lowercased substrings that betray a stub
-    color_table_macros: tuple[str, ...]  # color macros AAAI press rules reject in tables
+    color_table_macros: tuple[str, ...]  # color macros the venue's press rules reject in tables
 
 
-VENUE_RULES: dict[str, VenueRules] = {
-    "aaai-27": VenueRules(
-        venue_id="aaai-27",
-        page_limit_technical=7,
-        references_excluded=True,
-        requires_abstract=True,
-        min_abstract_words=20,
-        checklist_required=True,
-        placeholder_markers=(
-            "type your",
-            "todo",
-            "tbd",
-            "lorem ipsum",
-            "xxx",
-            "goes here",
-            "placeholder",
-            "your title here",
-            "your abstract here",
-            "fixme",
-            "title here",
-            "abstract here",
-        ),
-        color_table_macros=(
-            r"\cellcolor",
-            r"\rowcolor",
-            r"\columncolor",
-            r"\colorbox",
-            r"\textcolor",
-        ),
-    ),
-}
+# Keyed by the ``--venue`` id. Empty since 2026-08-28 (AAAI-27 removed after its
+# deadline passed — see the module docstring for the template). Add the next target
+# venue here; the detectors below need no changes.
+VENUE_RULES: dict[str, VenueRules] = {}
 
-DEFAULT_VENUE = "aaai-27"
+# No venue by default: the guard is opt-in per venue, and the table is empty.
+DEFAULT_VENUE: Optional[str] = None
 
 
-def get_rules(venue: str) -> VenueRules:
-    return VENUE_RULES[venue]
+def get_rules(venue: Optional[str]) -> Optional[VenueRules]:
+    """Look up a venue's rules. ``None`` (no venue selected) → ``None``; an unknown
+    id raises ``ValueError`` naming the configured venues."""
+    if venue is None:
+        return None
+    try:
+        return VENUE_RULES[venue]
+    except KeyError:
+        known = ", ".join(sorted(VENUE_RULES)) or "none configured"
+        raise ValueError(f"unknown venue {venue!r} (known venues: {known})") from None
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +257,9 @@ def check_changed_abstract(
                 kind=_Kind.CHANGED_ABSTRACT,
                 severity=_Sev.BLOCKER,
                 detail=(
-                    "the abstract has changed substantially from the recorded baseline — AAAI "
-                    "can reject a paper whose final abstract diverges from the registered one; "
-                    "verify the change is intended"
+                    "the abstract has changed substantially from the recorded baseline — venues "
+                    "with an abstract-registration deadline can reject a paper whose final "
+                    "abstract diverges from the registered one; verify the change is intended"
                 ),
                 evidence=abstract.strip()[:200],
             )
@@ -279,9 +268,9 @@ def check_changed_abstract(
 
 
 def check_color_tables(rules: VenueRules, tex_text: str) -> list[SubmissionFinding]:
-    """Flag color macros scoped *inside* a table/tabular environment (AAAI press
-    rules reject color-coded result tables). ``\\textcolor`` in body prose is not
-    flagged — only inside a table environment."""
+    """Flag color macros scoped *inside* a table/tabular environment (some venues'
+    press rules reject color-coded result tables). ``\\textcolor`` in body prose is
+    not flagged — only inside a table environment."""
     text = _strip_comments(tex_text)
     found: list[str] = []
     for m in _TABLE_ENV_RE.finditer(text):
@@ -297,7 +286,7 @@ def check_color_tables(rules: VenueRules, tex_text: str) -> list[SubmissionFindi
             severity=_Sev.BLOCKER,
             detail=(
                 "color macros (" + ", ".join(f"`{m}`" for m in found) + ") appear inside a "
-                "table — AAAI press rules reject color-coded result tables; verify before submitting"
+                f"table — {rules.venue_id} press rules reject color-coded result tables; verify before submitting"
             ),
             evidence=found[0],
         )
@@ -307,7 +296,7 @@ def check_color_tables(rules: VenueRules, tex_text: str) -> list[SubmissionFindi
 def check_checklist_completeness(
     rules: VenueRules, checklist_found: bool, checklist_findings: list[ChecklistFinding]
 ) -> list[SubmissionFinding]:
-    """An unanswered mandatory checklist item → blocker (AAAI desk-rejects
+    """An unanswered mandatory checklist item → blocker (the venue desk-rejects
     incomplete checklists). Reuses the shipped checklist findings."""
     if not rules.checklist_required or not checklist_found:
         return []
@@ -319,8 +308,8 @@ def check_checklist_completeness(
             kind=_Kind.CHECKLIST_INCOMPLETE,
             severity=_Sev.BLOCKER,
             detail=(
-                f"{len(unanswered)} reproducibility-checklist item(s) are unanswered — AAAI "
-                "desk-rejects incomplete checklists; complete them before submitting"
+                f"{len(unanswered)} reproducibility-checklist item(s) are unanswered — "
+                f"{rules.venue_id} desk-rejects incomplete checklists; complete them before submitting"
             ),
         )
     ]
@@ -331,7 +320,7 @@ def check_checklist_completeness(
 
 
 def audit_submission_tex(
-    rules: VenueRules,
+    rules: Optional[VenueRules],
     *,
     title: Optional[str],
     abstract: Optional[str],
@@ -340,25 +329,33 @@ def audit_submission_tex(
     checklist_findings: list[ChecklistFinding],
     abstract_baseline: Optional[Path] = None,
 ) -> list[SubmissionFinding]:
-    """Source-level checks for TeX input (length is unmeasurable here, by design)."""
+    """Source-level checks for TeX input (length is unmeasurable here, by design).
+
+    With ``rules`` ``None`` (no venue selected) only the venue-independent
+    ``--abstract-baseline`` snapshot/diff runs.
+    """
     findings: list[SubmissionFinding] = []
-    findings += check_placeholder_title(rules, title, strict=True)
-    findings += check_placeholder_abstract(rules, abstract, strict=True)
+    if rules is not None:
+        findings += check_placeholder_title(rules, title, strict=True)
+        findings += check_placeholder_abstract(rules, abstract, strict=True)
+        findings += check_color_tables(rules, tex_text)
+        findings += check_checklist_completeness(rules, checklist_found, checklist_findings)
     findings += check_changed_abstract(abstract, abstract_baseline)
-    findings += check_color_tables(rules, tex_text)
-    findings += check_checklist_completeness(rules, checklist_found, checklist_findings)
     return findings
 
 
 def audit_submission_pdf(
-    rules: VenueRules,
+    rules: Optional[VenueRules],
     *,
     title: Optional[str],
     page_count: Optional[int],
     references_start_page: Optional[int],
 ) -> list[SubmissionFinding]:
     """The length check plus a safe (marker-only) placeholder-title check for PDF
-    input. The source-level checks need .tex and do not run here."""
+    input. The source-level checks need .tex and do not run here. Nothing runs
+    without a venue (``rules`` ``None``) — every PDF check is venue-specific."""
+    if rules is None:
+        return []
     findings: list[SubmissionFinding] = []
     findings += check_length(rules, page_count, references_start_page)
     findings += check_placeholder_title(rules, title, strict=False)

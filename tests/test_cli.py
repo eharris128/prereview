@@ -170,15 +170,34 @@ def test_main_threads_reviewer2_flag_to_pipeline(tmp_path: Path, monkeypatch):
 
 def test_parser_venue_gate_baseline_defaults():
     args = _build_parser().parse_args(["paper.tex"])
-    assert args.venue == "aaai-27"
+    assert args.venue is None  # no venue by default; the table is opt-in per venue
     assert args.gate is False
     assert args.abstract_baseline is None
 
 
-def test_parser_unknown_venue_errors():
+def test_parser_unknown_venue_errors(capsys):
     with pytest.raises(SystemExit) as exc:
         _build_parser().parse_args(["paper.tex", "--venue", "nope-99"])
-    assert exc.value.code == 2  # argparse invalid-choice exit code
+    assert exc.value.code == 2  # argparse usage-error exit code
+    assert "unknown venue 'nope-99'" in capsys.readouterr().err
+
+
+def test_parser_accepts_configured_venue(monkeypatch):
+    from prereview.venue_rules import VENUE_RULES
+
+    monkeypatch.setitem(VENUE_RULES, "test-venue", _test_venue_rules())
+    args = _build_parser().parse_args(["paper.tex", "--venue", "test-venue"])
+    assert args.venue == "test-venue"
+
+
+def _test_venue_rules():
+    from prereview.venue_rules import VenueRules
+
+    return VenueRules(
+        venue_id="test-venue", page_limit_technical=9, references_excluded=True,
+        requires_abstract=True, min_abstract_words=20, checklist_required=False,
+        placeholder_markers=("todo",), color_table_macros=(),
+    )
 
 
 def test_parser_gate_and_baseline_parse():
@@ -243,10 +262,34 @@ def test_main_threads_venue_and_baseline_to_pipeline(tmp_path: Path, monkeypatch
     tex = tmp_path / "p.tex"
     tex.write_text(r"\documentclass{article}")
 
-    main([str(tex), "--venue", "aaai-27", "--abstract-baseline", str(tmp_path / "ab.txt"), "--show-rating"])
-    assert captured["venue"] == "aaai-27"
+    from prereview.venue_rules import VENUE_RULES
+
+    monkeypatch.setitem(VENUE_RULES, "test-venue", _test_venue_rules())
+    main([str(tex), "--venue", "test-venue", "--abstract-baseline", str(tmp_path / "ab.txt"), "--show-rating"])
+    assert captured["venue"] == "test-venue"
     assert captured["abstract_baseline"] == (tmp_path / "ab.txt").resolve()
     assert captured["show_rating"] is True
+
+
+def test_main_threads_no_venue_by_default(tmp_path: Path, monkeypatch):
+    from prereview import cli
+    from prereview.models import CoverageReport
+
+    captured = {}
+    out = tmp_path / "p.review.md"
+
+    async def fake_run(*a, **kw):
+        captured.update(kw)
+        out.write_text("# review\n")
+        return out, CoverageReport()
+
+    monkeypatch.setattr(cli, "run_pipeline", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    tex = tmp_path / "p.tex"
+    tex.write_text(r"\documentclass{article}")
+
+    main([str(tex)])
+    assert captured["venue"] is None
 
 
 def test_main_errors_on_missing_checklist(tmp_path: Path):
