@@ -2,7 +2,7 @@
 
 `prereview`'s mission is narrow: **verify the citations the author already made**, and catch the mechanically-detectable problems that get a paper desk-rejected before anyone reads it. Everything below either extends that without widening it, or is explicitly out of scope. If you find yourself wanting to build one of the deferred items, add a note here first.
 
-_Last reconciled with the code: 2026-08-28._
+_Last reconciled with the code: 2026-08-28. Comparable tools: [docs/competitive-analysis.md](./docs/competitive-analysis.md)._
 
 ## Shipped
 
@@ -43,17 +43,63 @@ In rough priority order.
 6. **Sidecar JSON of the verification table** for programmatic post-processing. Still a Phase-2 question — the Markdown stays the only artifact unless asked.
 7. **LLM-assisted anonymization pass** for the semantic self-revelations the deterministic vectors can't see (`anonymize.py` defers this explicitly).
 
+## Candidates — stubs, not yet triaged
+
+Surfaced by the 2026-08-28 competitive analysis. Each is a placeholder: enough to start a plan doc, not a commitment. Promote into *Next up* with a number, or move to *Considered and declined* with a reason.
+
+### C1. DBLP and ACL Anthology as resolver sources
+- **What:** two more fallbacks after OpenAlex in `resolve.py`, same three-state `Resolution` contract.
+- **Why:** CS-native coverage the current four miss — workshop papers, older ACL, venue-only records without a DOI. RefChecker and Hallucinator both query them.
+- **From:** RefChecker, Hallucinator.
+- **Size:** ~1 day each; DBLP has a public search API, ACL Anthology needs its bib dump or a title-search shim.
+- **Open:** does the circuit breaker's per-source budget still hold with six sources on a 100-reference bibliography?
+
+### C2. Corrected-BibTeX export
+- **What:** `--export-bib PATH` writing a `.bib` whose resolved entries carry canonical title / authors / year / DOI, unresolved ones passed through untouched and commented.
+- **Why:** prereview already holds canonical metadata for every resolved entry; this is rendering, and it's the one output RefChecker users say they want.
+- **From:** RefChecker.
+- **Size:** half a day.
+- **Open:** never silently rewrite — diff-style report alongside, or only write when `--export-bib` is explicit?
+
+### C3. Local verifier option for stage 3
+- **What:** a `--verify-model ollama/...` path using SemanticCite's fine-tuned Qwen3-4B (or similar) as the support judge, keeping Opus for synthesis.
+- **Why:** stage 3 is the token-heavy stage (one call per citation site); a local judge makes re-runs free and offline.
+- **From:** SemanticCite (~84% weighted accuracy reported for the 4B model).
+- **Size:** 2–3 days including a calibration run against the current Sonnet verdicts.
+- **Open:** conflicts with the "Anthropic only, single key" design note. Decide whether that note is about *synthesis* or the whole pipeline before building.
+
+### C4. Resolver evaluation set
+- **What:** an offline harness that runs `resolve.py` against a labelled set of real and perturbed citations and reports ghost-detection precision / recall per source.
+- **Why:** the resolver has never been measured; every change to gating or fallback order is currently judged by feel.
+- **From:** CiteAudit (human-validated set with a hallucination taxonomy).
+- **Size:** 1–2 days; respx fixtures for the API responses so it runs in CI.
+- **Open:** licence / availability of the CiteAudit data; otherwise build a small in-house set from the golden fixtures.
+
+### C5. ACL venue entry
+- **What:** `VENUE_RULES["acl-arr"]` — page limit, anonymity expectations, outdated-arXiv-citation rule — mirroring what aclpubcheck enforces.
+- **Why:** it's the first concrete candidate for *Next up* #1, and aclpubcheck is an authoritative spec to copy from rather than guess.
+- **From:** aclpubcheck.
+- **Size:** hours for the data entry; the outdated-arXiv-citation rule is a new detector (~half a day) that also benefits every other venue.
+- **Open:** ARR's rolling deadlines mean no "deadline passed" retirement — decide whether venue entries carry an expiry at all.
+
+### C6. Checklist parser for a second kit
+- **What:** NeurIPS (or ACL-ARR) checklist support alongside the AAAI-27 kit format.
+- **Why:** the linter is the only guard still hard-wired to one venue's artifact; it needs a second kit to prove the "structural parser, venue data" claim.
+- **From:** NeurIPS Checklist Assistant (as the LLM contrast case, not a source).
+- **Size:** 1–2 days plus a golden fixture.
+- **Open:** same as *Next up* #2 — this stub exists to keep it visible next to C5.
+
 ## Considered and declined
 
-- **PDF prompt-injection sanitizer** (white-text / off-page / font-size-0 detection in PDFs sent to the LLM). Rated "mandatory" by the 2026-04-29 deep-research pass against Lin (arXiv:2507.06185) and Keuper (arXiv:2509.10248). Declined for prereview's deployment context: a single-user local CLI run on the user's own draft, not a service ingesting third-party PDFs. Reconsider if that ever changes.
+- **PDF prompt-injection sanitizer** (white-text / off-page / font-size-0 detection in PDFs sent to the LLM). Rated "mandatory" by the 2026-04-29 deep-research pass against Lin (arXiv:2507.06185) and Keuper (arXiv:2509.10248). Declined for prereview's deployment context: a single-user local CLI run on the user's own draft, not a service ingesting third-party PDFs. Reconsider if that ever changes — Ai-Review ships a reference implementation.
 - **Statcheck / GRIM / SPRITE ports.** See the numerical-sanity pack above for why.
 
 ## Out of scope
 
 - **Baseline-scout / missing prior work.** Verification is only on what is already cited. A Semantic Scholar Recommendations + Claude pass is credible (~1 week) but its precision ceiling is ~50–70%; if ever built, surface as suggestions only.
-- **Figure and table critique.** No layout, axis, or caption checking (a VLM axis/legend check is plausible per Bachhofner et al. 2025; not planned).
+- **Figure and table critique.** No layout, axis, or caption checking (a VLM axis/legend check is plausible per Bachhofner et al. 2025; not planned). Ai-Review covers figures; loupe covers proof-level triage.
 - **Formal-proof / Lean integration.** No machine-checked proof verification.
 - **Plagiarism / overlap detection.** No n-gram or embedding-based overlap checks.
 - **Web UI, auth, rate limiting, multi-tenant infrastructure.** Single-user local CLI by design.
-- **Ensembles across LLM providers.** Anthropic only, single API key.
+- **Ensembles across LLM providers.** Anthropic only, single API key. ai-peer-review exists for anyone who wants the six-model meta-review.
 - **Conformal-prediction calibration on the rating.** Moot now that the rating is opt-in and secondary.
