@@ -61,7 +61,7 @@ The CLI auto-loads these keys from a `.env` in the current directory, the input 
 | `CLAUDE_CODE_OAUTH_TOKEN` | Alternative to the above: routes spend to a Claude subscription. Needs the `[oauth]` extra and the `claude` CLI. |
 | `S2_API_KEY` | Optional but strongly recommended (free). The keyless Semantic Scholar pool rate-limits into the circuit breaker within a few calls, which also takes out the published-version check's primary source. |
 | `OPENALEX_API_KEY` | Optional. Keyed OpenAlex access. |
-| `PREREVIEW_MAILTO` | Optional. Joins the Crossref / OpenAlex / Unpaywall polite pools (`--mailto` overrides). |
+| `PREREVIEW_MAILTO` | Optional but recommended. A contact email for the scholarly APIs: it joins Crossref's polite pool and is required by Unpaywall, so the Unpaywall open-access PDF route is skipped when unset (`--mailto` overrides). |
 | `HF_TOKEN` | Optional. Lets `--artifacts` probe gated or private Hugging Face artifacts. |
 | `OPENREVIEW_USERNAME` / `OPENREVIEW_PASSWORD` | Required for `--openreview`. |
 

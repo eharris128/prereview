@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import respx
 
 from prereview import verify as verify_mod
 from prereview.cache import Cache
@@ -440,3 +441,49 @@ async def test_ghost_rationale_names_the_resolvers_near_misses(tmp_path):
     assert out.verdict == Verdict.TARGET_UNAVAILABLE
     assert "1999" in out.rationale and "Other Journal" in out.rationale
     assert "metadata is wrong rather than the paper missing" in out.rationale
+
+
+# --- Unpaywall route: skipped without a contact email, never sent with a placeholder ---
+
+
+@pytest.mark.asyncio
+async def test_unpaywall_skipped_without_mailto(cache, monkeypatch):
+    """No --mailto and no PREREVIEW_MAILTO: the Unpaywall route is skipped and counted.
+    A shared placeholder address would make every install look like one anonymous
+    client to Unpaywall, so no request may go out at all."""
+    monkeypatch.delenv("PREREVIEW_MAILTO", raising=False)
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.get(host="api.unpaywall.org").respond(200, json={})
+        async with Verifier(cache=cache, polite_mailto=None) as v:
+            out = await v._unpaywall_oa("10.1234/toy", verbose=False)
+            assert out is None
+            assert v.unpaywall_skipped == 1
+    assert not route.called
+
+
+@pytest.mark.asyncio
+async def test_unpaywall_queried_with_mailto(cache, monkeypatch):
+    """With --mailto the route runs, sends that address, and returns the OA PDF URL."""
+    monkeypatch.delenv("PREREVIEW_MAILTO", raising=False)
+    with respx.mock() as mock:
+        route = mock.get(host="api.unpaywall.org").respond(
+            200, json={"best_oa_location": {"url_for_pdf": "https://host/x.pdf"}}
+        )
+        async with Verifier(cache=cache, polite_mailto="reviewer@example.edu") as v:
+            out = await v._unpaywall_oa("10.1234/toy", verbose=False)
+    assert out == "https://host/x.pdf"
+    assert route.called
+    assert "email=reviewer%40example.edu" in str(route.calls[0].request.url)
+    assert v.unpaywall_skipped == 0
+
+
+@pytest.mark.asyncio
+async def test_unpaywall_env_mailto_fallback(cache, monkeypatch):
+    """PREREVIEW_MAILTO alone (no explicit polite_mailto) is enough to enable the route."""
+    monkeypatch.setenv("PREREVIEW_MAILTO", "env@example.edu")
+    with respx.mock() as mock:
+        route = mock.get(host="api.unpaywall.org").respond(200, json={})
+        async with Verifier(cache=cache) as v:
+            await v._unpaywall_oa("10.1234/toy", verbose=False)
+    assert route.called
+    assert "email=env%40example.edu" in str(route.calls[0].request.url)

@@ -904,6 +904,17 @@ def render_methodology(bundle: ReviewBundle) -> str:
         )
     else:
         stats_bullet = "Reported statistics (no statcheck / GRIM-style audit)."
+    # A skipped Unpaywall route is a configuration choice, not an outage, so it is
+    # disclosed here next to the abstract-only count rather than in Coverage.
+    n_unpaywall = int(bundle.coverage.unpaywall_skipped) if bundle.coverage else 0
+    unpaywall_note = (
+        f"\n\n    The Unpaywall open-access route was skipped for {n_unpaywall} "
+        f"citation{'' if n_unpaywall == 1 else 's'} because no contact email is configured, so "
+        "some abstract-only judgements above may have had full text available. Set "
+        "`PREREVIEW_MAILTO` or pass `--mailto` to enable it."
+        if n_unpaywall
+        else ""
+    )
     return textwrap.dedent(f"""
     ## Methodology and limits of this review
 
@@ -914,7 +925,7 @@ def render_methodology(bundle: ReviewBundle) -> str:
     resolve to any record in Crossref, Semantic Scholar, arXiv, or OpenAlex. Of the citations
     that did resolve, {bundle.fetched_full_text_count} were verified against the cited paper's full text and
     {bundle.abstract_only_count} were verified against the abstract only. {flagged} citation{"" if flagged == 1 else "s"} {"was" if flagged == 1 else "were"} flagged
-    in the section above.
+    in the section above.{unpaywall_note}
 
     {hygiene_line}
 

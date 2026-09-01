@@ -152,6 +152,8 @@ async def run_pipeline(
                 verbose=verbose,
             )
             verifications.append(result)
+    # Tests stub the Verifier; read defensively like the resolver counters below.
+    unpaywall_skipped = getattr(verifier, "unpaywall_skipped", 0)
 
     openreview_degraded = False
     if run_openreview:
@@ -196,6 +198,7 @@ async def run_pipeline(
         published_version_unchecked=getattr(resolver, "published_version_unchecked", 0),
         gate_blockers=collect_gate_blockers(paper),
         openreview_degraded=openreview_degraded,
+        unpaywall_skipped=unpaywall_skipped,
     )
 
     bundle = ReviewBundle(

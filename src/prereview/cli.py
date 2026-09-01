@@ -192,7 +192,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mailto",
         default=os.environ.get("PREREVIEW_MAILTO"),
         help=(
-            "Email address to include in the polite-pool User-Agent for Crossref / OpenAlex. "
+            "Contact email for the scholarly APIs: joins Crossref's polite pool and is "
+            "required by Unpaywall, whose open-access PDF lookups are skipped when unset. "
             "Defaults to $PREREVIEW_MAILTO if set."
         ),
     )

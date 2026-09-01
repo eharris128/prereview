@@ -227,6 +227,9 @@ class Verifier:
     ):
         self.cache = cache
         self.max_evidence_chars = max_evidence_chars
+        self.polite_mailto = polite_mailto
+        # Unpaywall lookups skipped for want of a contact email; surfaced in Methodology.
+        self.unpaywall_skipped = 0
         ua = f"prereview/{__version__}"
         if polite_mailto:
             ua += f" (mailto:{polite_mailto})"
@@ -462,13 +465,21 @@ class Verifier:
         return None
 
     async def _unpaywall_oa(self, doi: str, *, verbose: bool) -> Optional[str]:
-        """Look up an OA PDF URL via Unpaywall. Free; needs an email for politeness."""
-        # Unpaywall requires an email parameter. We use whatever the user
-        # provided via --mailto, or fall back to a generic "anonymous" form
-        # which Unpaywall still accepts but rate-limits more aggressively.
+        """Look up an OA PDF URL via Unpaywall, or skip when no contact email is set.
+
+        Unpaywall requires a real email on every request: it rate-limits per address
+        and uses it to reach a misbehaving client. A shared placeholder would make
+        every prereview install look like one anonymous client, so without
+        ``--mailto`` / ``PREREVIEW_MAILTO`` the route is skipped and counted for the
+        Methodology section rather than faked.
+        """
         from urllib.parse import quote
 
-        email = os.environ.get("PREREVIEW_MAILTO") or "anonymous@example.org"
+        email = self.polite_mailto or os.environ.get("PREREVIEW_MAILTO")
+        if not email:
+            self.unpaywall_skipped += 1
+            _log(verbose, "  Unpaywall skipped: no contact email (set PREREVIEW_MAILTO or --mailto)")
+            return None
         url = f"https://api.unpaywall.org/v2/{quote(doi, safe='')}?email={quote(email)}"
         r = await self.client.get(url, timeout=15.0)
         if r.status_code != 200:

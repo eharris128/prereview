@@ -1280,3 +1280,29 @@ def test_coverage_section_discloses_unchecked_published_versions():
     assert md is not None
     assert "2 arXiv-cited entries could not be checked for a published version (Semantic Scholar / DBLP / Crossref" in md
     assert "NOT a finding about the paper" in md
+
+
+# --- Unpaywall skip: disclosed in Methodology, never in Coverage ---
+
+
+def test_render_methodology_discloses_unpaywall_skip():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1", abstract_only=True)])
+    bundle.coverage = CoverageReport(unpaywall_skipped=3)
+    md = syn.render_methodology(bundle)
+    assert "Unpaywall open-access route was skipped for 3 citations" in md
+    assert "PREREVIEW_MAILTO" in md
+
+
+def test_render_methodology_silent_when_unpaywall_not_skipped():
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport()
+    assert "Unpaywall" not in syn.render_methodology(bundle)
+
+
+def test_coverage_section_not_triggered_by_unpaywall_skip():
+    """A missing mailto is configuration, not an infrastructure outage: it must not
+    make the Coverage section appear or count as a coverage gap."""
+    bundle = _make_bundle([_v(Verdict.SUPPORTS, ref_id="1")])
+    bundle.coverage = CoverageReport(unpaywall_skipped=2)
+    assert syn.render_coverage_section(bundle) is None
+    assert not bundle.coverage.has_coverage_gap

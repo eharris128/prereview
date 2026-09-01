@@ -449,6 +449,10 @@ class CoverageReport(BaseModel):
     # coverage gap for the exit code — the check is an enrichment, and the record
     # stays un-checked in the cache so the next run retries it.
     published_version_unchecked: int = 0
+    # Unpaywall open-access lookups skipped this run because no contact email was
+    # configured (``--mailto`` / ``PREREVIEW_MAILTO``). A configuration choice, not
+    # degradation: disclosed in Methodology, never a coverage gap.
+    unpaywall_skipped: int = 0
     # Hard desk-reject blockers for ``--gate`` (U3): residual-identity (U2) plus
     # blocker-severity submission findings. Populated every run; the CLI only acts
     # on it (exit code 4, which outranks the coverage-gap exit 3) when ``--gate``
