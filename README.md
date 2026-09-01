@@ -4,7 +4,7 @@ AI-assisted pre-submission review of academic preprints, with **verification of 
 
 `prereview` reads a draft (PDF, or `.tex` + `.bib`), parses every in-text citation and its bibliography entry, resolves each entry against Crossref / Semantic Scholar / arXiv / OpenAlex, judges whether the resolved paper actually supports the surrounding claim, runs a battery of mechanical source-level checks, and writes one structured Markdown review next to the input.
 
-It is built on top of [PaperQA2](https://github.com/Future-House/paper-qa) for PDF retrieval and grounding. The contribution of this project is the citation-verification post-processor, the deterministic checks, and the review-generation prompts.
+The pipeline is deliberately plain: pypdf for PDF text, the bibliographic APIs above for canonical metadata, and the LLM only to judge whether retrieved text supports a claim and to write the review. The contribution is the citation-verification post-processor, the deterministic checks, and the review-generation prompts.
 
 ## What it catches
 
@@ -26,7 +26,7 @@ It is built on top of [PaperQA2](https://github.com/Future-House/paper-qa) for P
 
 - **Reproducibility-checklist linter** (AAAI-27 kit format) — unanswered items, answers outside the option set, gate-vs-subitem contradictions, and "yes" answers with no supporting evidence in the paper.
 - **Double-blind anonymization audit** — residual `\author` / `\thanks` / `\email` blocks, "in our previous work [X]", identity-revealing GitHub / homepage URLs, acknowledgments in a submission build, and an opt-in `--authors` surname grep.
-- **Submission readiness** — per-venue rules for page limits (PDF only), placeholder or empty title/abstract, color-coded result tables, and checklist completeness. Per-venue facts are data (`venue_rules.VENUE_RULES`); the table is **currently empty** — the AAAI-27 entry was removed after that deadline passed — so `--venue` has nothing to select until the next venue is added. The `--abstract-baseline` diff is venue-independent and always available.
+- **Submission readiness** — page limits (PDF only), placeholder or empty title/abstract, color-coded result tables, and checklist completeness, driven by a per-venue rules table (`venue_rules.VENUE_RULES`). The detectors are generic; supporting a venue is a data entry, not code. No venue entry ships in this release, so `--venue` is inactive until one is added (see [CONTRIBUTING](./CONTRIBUTING.md)). The `--abstract-baseline` diff is venue-independent and always available.
 - **ML numerical-sanity pack** — bounded metrics over their ceiling, train/val/test splits that don't sum to the stated total, mean ± std ranges that escape the metric's bounds, prose-vs-table hyperparameter drift, and abstract headline deltas no results table backs up. Precision over recall: every detector skips when unsure.
 
 **Opt-in network enrichments**
@@ -41,7 +41,7 @@ See [ROADMAP.md](./ROADMAP.md). It does not look for *missing* prior work, does 
 ## Quickstart
 
 ```bash
-git clone https://github.com/echarris/prereview.git
+git clone https://github.com/eharris128/prereview.git
 cd prereview
 uv venv --python 3.12 .venv
 uv pip install -e ".[dev]"          # add ",openreview" to the extras for --openreview
@@ -98,7 +98,7 @@ prereview manuscript.tex --bib refs.bib   # explicit bibliography path
 
 The TeX path is preferred when available: it parses `\cite{}` commands and the BibTeX file directly, so the citation-to-bib linkage is exact rather than heuristic. The bibliography is auto-discovered from `\bibliography{}`, `\addbibresource{}`, or a sibling `references.bib`.
 
-All source-level guards (hygiene, link health, checklist, anonymization, numerical sanity, and the TeX side of submission readiness) need `.tex` input. On PDF input, `prereview` runs citation verification (including retraction detection) and — once a venue is configured — the page-length and placeholder-title checks.
+All source-level guards (hygiene, link health, checklist, anonymization, numerical sanity, and the TeX side of submission readiness) need `.tex` input. On PDF input, `prereview` runs citation verification (including retraction detection) and, when a `--venue` entry is defined, the page-length and placeholder-title checks.
 
 ## CLI
 
@@ -117,8 +117,8 @@ Checks (on by default for .tex unless noted)
   --authors "A,B"          Extra anonymization check: grep the body for these surnames.
   --no-numeric             Skip the ML numerical-sanity pack.
   --venue ID               Venue whose submission rules to check (desk-reject guard).
-                           Default: none — venue-specific checks are skipped. No venue
-                           is currently configured.
+                           Default: none — venue-specific checks are skipped. Venues
+                           are data entries in venue_rules.VENUE_RULES.
   --abstract-baseline PATH (.tex) Snapshot the abstract on first run; flag later runs
                            whose abstract changed substantially. Works without --venue.
   --gate                   Exit 4 if a hard desk-reject blocker is found (residual
@@ -160,7 +160,7 @@ Models & plumbing
 
 ## Pipeline
 
-1. **Ingest.** Parse the PDF (PaperQA2 + heuristics + one LLM bibliography pass) or the `.tex`/`.bib` natively. Record every in-text citation with its surrounding sentence(s). On `.tex`, run the deterministic guards: hygiene, checklist, anonymization, submission readiness, numerical sanity.
+1. **Ingest.** Parse the PDF (pypdf text extraction + heuristics + one LLM bibliography pass) or the `.tex`/`.bib` natively. Record every in-text citation with its surrounding sentence(s). On `.tex`, run the deterministic guards: hygiene, checklist, anonymization, submission readiness, numerical sanity.
 2. **Probe.** Check link health; optionally check artifact existence (`--artifacts`).
 3. **Resolve.** For each bibliography entry, identifier lookups first — Crossref / Semantic Scholar / OpenAlex by DOI, Semantic Scholar / arXiv by arXiv ID — then, only if none hit, title searches in the same source order (Crossref → Semantic Scholar → arXiv → OpenAlex). A title-search hit must be within ±2 years of the `.bib` entry; a title+author match with the wrong year is kept as a *weak* candidate and accepted, with a visible note, only when nothing better exists. Follow-ups on every resolved record: an OpenAlex retraction lookup by DOI and, for arXiv-cited entries, a published-version check. Outcomes are three-state (resolved / terminal miss / degraded) with retries and a per-source circuit breaker, so an API outage is disclosed as degradation rather than reported as a ghost citation — and a ghost verdict names the near-misses the searches did find.
 4. **Verify.** Classify each citation's role, then ask the LLM whether the resolved paper supports the surrounding claim. Verdicts: *supports*, *partially supports*, *does not support*, *abstract too thin to tell*, *target unavailable*, and a distinct *verification unavailable* for infrastructure failure. Optionally enrich with OpenReview decisions (`--openreview`).
@@ -194,4 +194,4 @@ No linter is configured; `python -m py_compile` is the quick syntax check.
 
 ## License
 
-Apache-2.0, matching PaperQA2.
+[MIT](./LICENSE).

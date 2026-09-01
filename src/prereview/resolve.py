@@ -204,7 +204,7 @@ class Resolver:
         self.openalex_api_key = openalex_api_key
         self.polite_mailto = polite_mailto
         self.verbose = verbose
-        ua = f"prereview/{__version__} (https://github.com/echarris/prereview"
+        ua = f"prereview/{__version__} (https://github.com/eharris128/prereview"
         if polite_mailto:
             ua += f"; mailto:{polite_mailto}"
         ua += ")"

@@ -18,7 +18,7 @@ No open-source tool found does what prereview's pipeline does end-to-end: parse 
 
 | Tool | Inputs | Existence / metadata | Claim support | Retraction | LLM review | Deterministic checks | License | Activity (2026-08) |
 |---|---|---|---|---|---|---|---|---|
-| **prereview** | PDF, `.tex`+`.bib` | Crossref, S2, arXiv, OpenAlex | Yes — 6 verdicts incl. abstain and infra-fail | OpenAlex | Opus + adversarial Reviewer-2 | hygiene, anonymization, checklist, venue rules, numeric sanity, links, artifacts | Apache-2.0 | — |
+| **prereview** | PDF, `.tex`+`.bib` | Crossref, S2, arXiv, OpenAlex | Yes — 6 verdicts incl. abstain and infra-fail | OpenAlex | Opus + adversarial Reviewer-2 | hygiene, anonymization, checklist, venue rules, numeric sanity, links, artifacts | MIT | — |
 | [RefChecker](https://github.com/markrussinovich/refchecker) | arXiv ID, PDF, `.tex`, `.bib`/`.bbl`, text | S2, OpenAlex, Crossref, **DBLP, ACL Anthology** + LLM web search | No | — | No | metadata correction, corrected BibTeX/RIS export | MIT | ~480★, active |
 | [Hallucinator](https://github.com/gianlucasb/hallucinator) | PDF | 9 DBs incl. PubMed, Europe PMC, Open Library; offline mode | No | Crossref | No | — | AGPL-3.0 | ~350★, active |
 | [SemanticCite](https://github.com/sebhaan/SemanticCite) | claim + reference document pairs | No | **Yes** — supported / partial / unsupported / uncertain | — | No | — | MIT | ~25★ |

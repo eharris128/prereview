@@ -8,10 +8,9 @@ version = "0.1.0"
 description = "AI-assisted pre-submission review of academic preprints, with verification of every cited reference."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
-authors = [{ name = "Evan Charris" }]
+license = { text = "MIT" }
+authors = [{ name = "Evan Harris" }]
 dependencies = [
-    "paper-qa>=5.0.0",
     "httpx>=0.27",
     "litellm>=1.50",
     "pydantic>=2.7",
@@ -36,6 +35,10 @@ oauth = [
 openreview = [
     "openreview-py>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/eharris128/prereview"
+Issues = "https://github.com/eharris128/prereview/issues"
 
 [project.scripts]
 prereview = "prereview.cli:main"
