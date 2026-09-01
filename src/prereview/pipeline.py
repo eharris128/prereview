@@ -193,6 +193,7 @@ async def run_pipeline(
         verification_degraded=verification_degraded,
         recovered_after_retry=resolver.recovered_after_retry,
         circuit_broken_sources=resolver.circuit_broken_sources,
+        published_version_unchecked=getattr(resolver, "published_version_unchecked", 0),
         gate_blockers=collect_gate_blockers(paper),
         openreview_degraded=openreview_degraded,
     )

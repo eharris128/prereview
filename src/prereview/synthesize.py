@@ -17,6 +17,7 @@ import textwrap
 from typing import Iterable, Optional
 
 from .llm import acompletion_json
+from .resolve import arxiv_id_of, cites_arxiv_version
 from .models import (
     AnonymizationFindingKind,
     ArtifactStatus,
@@ -128,6 +129,8 @@ def _render_resolved_record(canonical) -> list[str]:
     lines = ["**Resolved record:**", ""]
     if canonical.is_retracted:
         lines.append("- ⚠ **RETRACTED** — this paper has been retracted.")
+    if canonical.match_note:
+        lines.append(f"- ⚠ **Weak match** — {canonical.match_note}")
     lines.append(f"- Source: `{canonical.source}`")
     lines.append(f"- Title: {canonical.title or '_(unknown)_'}")
     if canonical.authors:
@@ -277,28 +280,57 @@ def _retracted_groups(
     return groups
 
 
+def _weak_match_groups(
+    verifications: list[VerificationResult],
+) -> dict[str, list[VerificationResult]]:
+    """Group verifications whose resolved record was a *weak* match (title and
+    authors only; year outside tolerance), by bibkey."""
+    groups: dict[str, list[VerificationResult]] = {}
+    for v in verifications:
+        if v.canonical is not None and v.canonical.match_note:
+            groups.setdefault(v.reference.ref_id, []).append(v)
+    return groups
+
+
+def _outdated_arxiv_groups(
+    verifications: list[VerificationResult],
+) -> dict[str, list[VerificationResult]]:
+    """Group verifications where the .bib cites an arXiv preprint but the
+    resolved record knows a published version, by bibkey."""
+    groups: dict[str, list[VerificationResult]] = {}
+    for v in verifications:
+        c = v.canonical
+        if c is not None and c.published_version is not None and cites_arxiv_version(v.reference):
+            groups.setdefault(v.reference.ref_id, []).append(v)
+    return groups
+
+
 def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
     """Markdown for the Hygiene checks section, or None if there's nothing
     to surface.
 
     Reports source- and metadata-level issues that the per-citation Citation
     Issues section can't see on its own: retractions (which can apply even to
-    a paper that supports its claim), broken cross-references (\\ref to a
-    non-existent \\label), and unused bibliography entries (in the .bib but
-    never \\cite-d).
+    a paper that supports its claim), weak resolver matches (year differs from
+    the .bib), arXiv preprints with a published version, broken
+    cross-references (\\ref to a non-existent \\label), and unused
+    bibliography entries (in the .bib but never \\cite-d).
     """
     paper = bundle.paper
     broken = paper.broken_refs
     unused = paper.unused_bibkeys
     retracted = _retracted_groups(bundle.verifications)
+    weak = _weak_match_groups(bundle.verifications)
+    outdated = _outdated_arxiv_groups(bundle.verifications)
     bad_links = [c for c in paper.link_checks if not c.ok]
-    if not broken and not unused and not retracted and not bad_links:
+    if not broken and not unused and not retracted and not bad_links and not weak and not outdated:
         return None
 
     out: list[str] = ["## Hygiene checks", ""]
     out.append(
         "Source-level issues detected by parsing the .tex and .bib directly, "
-        "plus metadata-level red flags from the resolver (retractions). "
+        "plus metadata-level red flags from the resolver (retractions, weak "
+        "matches, arXiv preprints with a published version). "
         "These are mechanical findings — the kind a copyeditor or pre-submission "
         "checklist would catch."
     )
@@ -322,6 +354,55 @@ def render_hygiene_section(bundle: ReviewBundle) -> Optional[str]:
                 doi_str = f" — DOI [{canonical.doi}](https://doi.org/{canonical.doi})"
             site_str = f"{n} cite site{'s' if n != 1 else ''}"
             out.append(f"- `{ref_id}` ({site_str}){doi_str}")
+        out.append("")
+
+    if weak:
+        out.append(f"### Resolved on title and authors only — year differs ({len(weak)})")
+        out.append("")
+        out.append(
+            "No source had a record whose year matches the bibliography entry, so the "
+            "resolver accepted the closest title-and-author match and is telling you so. "
+            "Usually one of: the entry's year is wrong; it cites a different edition; or "
+            "the match is a reprint / mirror of the real paper (these exist for well-known "
+            "papers and carry the wrong venue and year). Check the entry; if the resolved "
+            "record is not the paper you mean, fixing the entry's metadata lets the "
+            "resolver find the real one."
+        )
+        out.append("")
+        for ref_id, sites in weak.items():
+            ref = sites[0].reference
+            c = sites[0].canonical
+            bib_year = ref.year if ref.year is not None else "no year"
+            rec_year = c.year if c.year is not None else "no year"
+            where = f", {c.venue}" if c.venue else ""
+            doi_str = f" (DOI [{c.doi}](https://doi.org/{c.doi}))" if c.doi else ""
+            out.append(
+                f"- `{ref_id}` — bibliography: {bib_year} · resolved: {rec_year}{where}{doi_str}"
+            )
+        out.append("")
+
+    if outdated:
+        out.append(f"### arXiv preprints with a published version ({len(outdated)})")
+        out.append("")
+        out.append(
+            "These entries cite the arXiv preprint, but a peer-reviewed version is on "
+            "record. Most venues ask authors to cite the published version where one "
+            "exists (ACL's aclpubcheck enforces it; reviewers notice). Cite the preprint "
+            "only if it is the version you actually relied on — the two can differ — and "
+            "check the published metadata before switching."
+        )
+        out.append("")
+        for ref_id, sites in outdated.items():
+            ref = sites[0].reference
+            pv = sites[0].canonical.published_version
+            aid = arxiv_id_of(ref)
+            cited_as = f"arXiv:{aid}" if aid else "an arXiv preprint"
+            if ref.year is not None:
+                cited_as += f" ({ref.year})"
+            venue = f"**{pv.venue}**" if pv.venue else "a venue version"
+            year_str = f" ({pv.year})" if pv.year is not None else ""
+            doi_str = f", DOI [{pv.doi}](https://doi.org/{pv.doi})" if pv.doi else ""
+            out.append(f"- `{ref_id}` — cited as {cited_as} → published: {venue}{year_str}{doi_str}")
         out.append("")
 
     if broken:
@@ -693,19 +774,20 @@ def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
     broken = list(cov.circuit_broken_sources) if cov else []
     synth_degraded = bool(cov.synthesis_degraded) if cov else False
     openreview_degraded = bool(cov.openreview_degraded) if cov else False
+    pv_unchecked = int(cov.published_version_unchecked) if cov else 0
     artifact_degraded = [
         c for c in bundle.paper.artifact_checks if c.status == ArtifactStatus.TRANSIENT_FAIL
     ]
 
     if (
         not degraded and recovered == 0 and not broken and not synth_degraded
-        and not artifact_degraded and not openreview_degraded
+        and not artifact_degraded and not openreview_degraded and not pv_unchecked
     ):
         return None  # nothing infrastructure-related to disclose
 
     resolved = total - ghost - len(degraded)
     lines = ["## Review coverage & reliability", ""]
-    if degraded or broken or synth_degraded or artifact_degraded or openreview_degraded:
+    if degraded or broken or synth_degraded or artifact_degraded or openreview_degraded or pv_unchecked:
         lines.append(
             "_Some parts of this review could not be completed due to infrastructure "
             "issues. The items below are **not** findings about your paper — re-running "
@@ -755,6 +837,14 @@ def render_coverage_section(bundle: ReviewBundle) -> Optional[str]:
             "- OpenReview enrichment could not be completed (login or API failure); cited-paper "
             "decisions were not annotated this run."
         )
+    if pv_unchecked:
+        lines.append(
+            f"- {pv_unchecked} arXiv-cited entr{'y' if pv_unchecked == 1 else 'ies'} could not be "
+            "checked for a published version (Semantic Scholar / DBLP / Crossref unavailable "
+            "after retries), so "
+            "the Hygiene section may be incomplete on that point. NOT a finding about the "
+            "paper; re-run to confirm."
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -765,6 +855,8 @@ def render_methodology(bundle: ReviewBundle) -> str:
     n_broken = len(bundle.paper.broken_refs)
     n_unused = len(bundle.paper.unused_bibkeys)
     n_retracted = len(_retracted_groups(bundle.verifications))
+    n_weak = len(_weak_match_groups(bundle.verifications))
+    n_outdated = len(_outdated_arxiv_groups(bundle.verifications))
     n_links = len(bundle.paper.link_checks)
     n_bad_links = sum(1 for c in bundle.paper.link_checks if not c.ok)
     link_clause = (
@@ -779,7 +871,10 @@ def render_methodology(bundle: ReviewBundle) -> str:
         f"{n_unused} unused bibliography entr{'y' if n_unused == 1 else 'ies'} "
         f"(in the .bib but never \\cite-d), "
         f"{n_retracted} retracted citation{'' if n_retracted == 1 else 's'} "
-        f"(per OpenAlex / Retraction Watch){link_clause}."
+        f"(per OpenAlex / Retraction Watch), "
+        f"{n_weak} resolved on title/author only (year differs), "
+        f"{n_outdated} arXiv-cited entr{'y' if n_outdated == 1 else 'ies'} with a published "
+        f"version{link_clause}."
     )
     if bundle.paper.checklist_found:
         # 4-space indent + blank line so it dedents uniformly with the template below.

@@ -12,6 +12,10 @@ Hashes point at the landing commit; later fixes may have touched the same area.
 
 - Four-source resolution (Crossref → Semantic Scholar → arXiv → OpenAlex), role-aware support judgement (`5b0f3a6`), issues grouped by bibkey (`fb796ba`).
 - **Retraction detection** (`3dba07d`) — OpenAlex `is_retracted` follow-up on every resolved DOI, whichever source resolved it.
+- **Resolver wrong-match guard** (2026-08-28) — identifier lookups (DOI / arXiv ID) across all four sources before any title search; title-search hits year-gated (±2, `_SourceConfig.year_tolerance`) against the `.bib` entry; a title+author match with the wrong year is accepted only as a last resort and rendered everywhere as a *weak match*; rejected near-misses are named in the ghost rationale; DataCite `10.48550/arXiv.*` DOIs yield the arXiv ID; arXiv's HTTP-200 "Error" entry for an unknown ID is a terminal miss, not a hit. Motivated by a real case found in the cache: *Attention Is All You Need* (no DOI in the `.bib`) had resolved via Crossref to a 2025 mirror-journal DOI (`10.65215/r5bs2d54`), which beat the real paper because Crossref was queried first and nothing checked the year.
+- **Outdated-arXiv-citation check** (2026-08-28) — for entries that cite an arXiv preprint, a `published_version` on the canonical record from Semantic Scholar's merged record, arXiv's registered journal DOI, a strong Crossref / OpenAlex venue hit, a DBLP search (curated, keyless, and the only source that knows the DOI-less NeurIPS / ICLR / ICML versions — this is DBLP's first use in prereview, as a confirmer only, not yet a resolver source per C1), or (when S2 is unavailable) a tightly gated Crossref title search. Crossref's relevance ranking cannot surface well-known titles at all (*BERT* is buried under hundreds of "X-BERT: Pre-training…" derivatives under every query form tried), which is why DBLP is the primary confirmer. Cached with the record like the retraction flag; records cached before the field existed are upgraded on the next run; transient failures leave it un-checked and are disclosed in Coverage (not an exit-3 gap). Rendered under Hygiene with the venue / DOI to switch to. This was the venue-independent half of C5.
+- **Verify cache** — stage-3 verdicts are cached under `~/.prereview/cache/verify/`, keyed on (model, bibkey, sentence, evidence mode, prompt version), so re-runs re-spend tokens only on changed citations. Listed under *Next up* until 2026-08-28; it had already shipped.
+- **Unpaywall OA-PDF route** — `verify._fetch_full_text` tries the record's OA URL, the `.bib` URL, Unpaywall by DOI, then OpenAlex by DOI. Same stale *Next up* entry; Unpaywall is DOI-only so it never made sense as a *resolver* source.
 - **Robustness hardening** (`9d88bd2` … `74145bc`) — three-state resolution outcomes with tenacity retries and a per-source circuit breaker; `VERIFICATION_UNAVAILABLE` kept distinct from honest abstention; LLM-call retries; the *Review coverage & reliability* section; CLI exit codes 0 / 1 / 3 / 4 with clean error messages.
 - **OpenReview decision enrichment** (`aa9b24e`; `--openreview`, opt-in) — accept/reject decision and rating distribution for cited papers on OpenReview. Needs credentials and the `[openreview]` extra; degrades cleanly without either.
 
@@ -37,11 +41,9 @@ In rough priority order.
 
 1. **Add the next target venue to `VENUE_RULES`.** Data only — a `VenueRules` entry with the page limit, placeholder markers, color-table policy, and whether a checklist is mandatory; the detectors need no changes. Until this lands the desk-reject guard is effectively just the abstract-baseline diff.
 2. **Other venues' reproducibility checklists** (NeurIPS, ACL-ARR). The parser is structural (question / options / response / gate), so this should mostly be discovery rules plus option-set data — but each kit needs a golden fixture like the AAAI-27 one.
-3. **Verify-cache keyed on `(claim_hash, target_doi)`** so re-runs of the same paper don't re-spend Sonnet tokens on unchanged citations. Today only resolution and fetched PDFs are cached; stage 3 re-judges every time.
-4. **Unpaywall as a fifth OA-PDF fallback** in the resolver.
-5. **Diff mode for revision rounds** — take a v1 review and a v2 paper; report which v1-flagged issues remain and what the revision changed.
-6. **Sidecar JSON of the verification table** for programmatic post-processing. Still a Phase-2 question — the Markdown stays the only artifact unless asked.
-7. **LLM-assisted anonymization pass** for the semantic self-revelations the deterministic vectors can't see (`anonymize.py` defers this explicitly).
+3. **Diff mode for revision rounds** — take a v1 review and a v2 paper; report which v1-flagged issues remain and what the revision changed.
+4. **Sidecar JSON of the verification table** for programmatic post-processing. Still a Phase-2 question — the Markdown stays the only artifact unless asked.
+5. **LLM-assisted anonymization pass** for the semantic self-revelations the deterministic vectors can't see (`anonymize.py` defers this explicitly).
 
 ## Candidates — stubs, not yet triaged
 
@@ -51,7 +53,7 @@ Surfaced by the 2026-08-28 competitive analysis. Each is a placeholder: enough t
 - **What:** two more fallbacks after OpenAlex in `resolve.py`, same three-state `Resolution` contract.
 - **Why:** CS-native coverage the current four miss — workshop papers, older ACL, venue-only records without a DOI. RefChecker and Hallucinator both query them.
 - **From:** RefChecker, Hallucinator.
-- **Size:** ~1 day each; DBLP has a public search API, ACL Anthology needs its bib dump or a title-search shim.
+- **Size:** ~1 day each; DBLP has a public search API (already wired as a published-version confirmer on 2026-08-28 — `Resolver._dblp_published_version` has the gate, breaker source name, and response parsing a resolver source would reuse), ACL Anthology needs its bib dump or a title-search shim.
 - **Open:** does the circuit breaker's per-source budget still hold with six sources on a 100-reference bibliography?
 
 ### C2. Corrected-BibTeX export
@@ -74,12 +76,13 @@ Surfaced by the 2026-08-28 competitive analysis. Each is a placeholder: enough t
 - **From:** CiteAudit (human-validated set with a hallucination taxonomy).
 - **Size:** 1–2 days; respx fixtures for the API responses so it runs in CI.
 - **Open:** licence / availability of the CiteAudit data; otherwise build a small in-house set from the golden fixtures.
+- **Evidence (2026-08-28):** the first real wrong match (see *Resolver wrong-match guard*) was found by reading the cache, not by a harness. An in-house set can start from the two in-flight papers' bibliographies plus perturbed copies (wrong year, swapped author, mirror-journal duplicate).
 
 ### C5. ACL venue entry
 - **What:** `VENUE_RULES["acl-arr"]` — page limit, anonymity expectations, outdated-arXiv-citation rule — mirroring what aclpubcheck enforces.
 - **Why:** it's the first concrete candidate for *Next up* #1, and aclpubcheck is an authoritative spec to copy from rather than guess.
 - **From:** aclpubcheck.
-- **Size:** hours for the data entry; the outdated-arXiv-citation rule is a new detector (~half a day) that also benefits every other venue.
+- **Size:** hours for the data entry. The outdated-arXiv-citation rule shipped on 2026-08-28 as a venue-independent Hygiene check; only the `VenueRules` data remains.
 - **Open:** ARR's rolling deadlines mean no "deadline passed" retirement — decide whether venue entries carry an expiry at all.
 
 ### C6. Checklist parser for a second kit
@@ -88,6 +91,13 @@ Surfaced by the 2026-08-28 competitive analysis. Each is a placeholder: enough t
 - **From:** NeurIPS Checklist Assistant (as the LLM contrast case, not a source).
 - **Size:** 1–2 days plus a golden fixture.
 - **Open:** same as *Next up* #2 — this stub exists to keep it visible next to C5.
+
+### C7. Duplicate bibliography entries
+- **What:** a Hygiene finding for two bibkeys with the same normalized title, or the same DOI / arXiv ID.
+- **Why:** it is a cheap deterministic check with no false-positive surface, and the AAAI author kit's sample `.bib` ships a literal "Duplicate Entry" that survives into real drafts.
+- **From:** the 2026-08-28 look at the in-flight drafts.
+- **Size:** hours.
+- **Open:** whether to also flag near-duplicates (same title, different year) or leave those to the resolver's weak-match note.
 
 ## Considered and declined
 

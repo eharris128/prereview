@@ -1176,3 +1176,107 @@ def test_coverage_section_discloses_openreview_degradation():
     cov = syn.render_coverage_section(bundle)
     assert cov is not None
     assert "OpenReview enrichment could not be completed" in cov
+
+
+# ---------------------------------------------------------------------------
+# resolver guard + outdated-arXiv rendering
+
+
+def _v_for_hygiene(canonical, *, ref_id="r", reference=None) -> VerificationResult:
+    from prereview.models import Citation as _Cit, Reference as _Ref
+
+    ref = reference or _Ref(ref_id=ref_id, raw_text="x", authors=["Alice Smith"], title="A Toy Paper", year=2017)
+    return VerificationResult(
+        ref_id=ref_id,
+        citation=_Cit(ref_id=ref_id, sentence="We use toys [r]."),
+        reference=ref,
+        canonical=canonical,
+        verdict=Verdict.SUPPORTS,
+        rationale="ok",
+        abstract_only=False,
+        role=CitationRole.METHOD_ATTRIBUTION,
+    )
+
+
+def _weak_record():
+    return CanonicalRecord(
+        source="crossref", title="A Toy Paper", authors=["Alice Smith"], year=2025,
+        venue="Mirror Journal", doi="10.9999/knockoff",
+        match_note="Matched on title and author surnames only: the bibliography gives 2017 but the resolved record is dated 2025 (Mirror Journal).",
+    )
+
+
+def test_render_hygiene_section_lists_weak_matches():
+    md = syn.render_hygiene_section(_make_bundle([_v_for_hygiene(_weak_record())]))
+    assert md is not None
+    assert "### Resolved on title and authors only — year differs (1)" in md
+    assert "`r` — bibliography: 2017 · resolved: 2025, Mirror Journal (DOI [10.9999/knockoff]" in md
+
+
+def test_render_resolved_record_shows_weak_match_note():
+    from prereview.synthesize import _render_resolved_record
+
+    lines = _render_resolved_record(_weak_record())
+    assert any("Weak match" in ln and "2025" in ln for ln in lines)
+
+
+def test_render_hygiene_section_lists_outdated_arxiv_only_for_arxiv_cited_entries():
+    from prereview.models import PublishedVersion, Reference as _Ref
+
+    pv = PublishedVersion(venue="Neural Information Processing Systems", year=2017, source="semanticscholar")
+    arxiv_cited = _Ref(
+        ref_id="vaswani", raw_text="x", authors=["Ashish Vaswani"], title="Attention Is All You Need",
+        year=2017, venue="arXiv preprint arXiv:1706.03762", arxiv_id="1706.03762",
+    )
+    doi_cited = _Ref(
+        ref_id="proper", raw_text="x", authors=["Ashish Vaswani"], title="Attention Is All You Need",
+        year=2017, venue="NeurIPS", doi="10.5555/3295222.3295349",
+    )
+    rec = lambda: CanonicalRecord(  # noqa: E731
+        source="semanticscholar", title="Attention Is All You Need", authors=["Ashish Vaswani"],
+        year=2017, venue="Neural Information Processing Systems",
+        published_version=pv, published_version_checked=True,
+    )
+    md = syn.render_hygiene_section(_make_bundle([
+        _v_for_hygiene(rec(), ref_id="vaswani", reference=arxiv_cited),
+        _v_for_hygiene(rec(), ref_id="proper", reference=doi_cited),
+    ]))
+    assert md is not None
+    assert "### arXiv preprints with a published version (1)" in md
+    assert "`vaswani` — cited as arXiv:1706.03762 (2017) → published: **Neural Information Processing Systems** (2017)" in md
+    assert "`proper`" not in md
+
+
+def test_render_hygiene_section_none_when_published_version_but_not_arxiv_cited():
+    from prereview.models import PublishedVersion, Reference as _Ref
+
+    ref = _Ref(ref_id="p", raw_text="x", authors=["A B"], title="T", year=2020, doi="10.1/x")
+    rec = CanonicalRecord(source="crossref", title="T", authors=["A B"], year=2020, venue="J",
+                          published_version=PublishedVersion(venue="J", year=2020), published_version_checked=True)
+    assert syn.render_hygiene_section(_make_bundle([_v_for_hygiene(rec, ref_id="p", reference=ref)])) is None
+
+
+def test_methodology_counts_weak_matches_and_outdated_arxiv():
+    from prereview.models import PublishedVersion, Reference as _Ref
+
+    arxiv_cited = _Ref(ref_id="a", raw_text="x", authors=["Alice Smith"], title="A Toy Paper", year=2017, arxiv_id="1706.03762")
+    outdated = CanonicalRecord(source="arxiv", title="A Toy Paper", authors=["Alice Smith"], year=2017, venue="arXiv",
+                               published_version=PublishedVersion(venue="NeurIPS", year=2017), published_version_checked=True)
+    md = syn.render_methodology(_make_bundle([
+        _v_for_hygiene(_weak_record(), ref_id="w"),
+        _v_for_hygiene(outdated, ref_id="a", reference=arxiv_cited),
+    ]))
+    assert "1 resolved on title/author only (year differs)" in md
+    assert "1 arXiv-cited entry with a published version" in md
+
+
+def test_coverage_section_discloses_unchecked_published_versions():
+    from prereview.models import CoverageReport
+
+    bundle = _make_bundle([_v(Verdict.SUPPORTS)])
+    bundle.coverage = CoverageReport(published_version_unchecked=2)
+    assert bundle.coverage.has_coverage_gap is False  # an enrichment gap never drives exit 3
+    md = syn.render_coverage_section(bundle)
+    assert md is not None
+    assert "2 arXiv-cited entries could not be checked for a published version (Semantic Scholar / DBLP / Crossref" in md
+    assert "NOT a finding about the paper" in md

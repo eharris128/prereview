@@ -53,6 +53,24 @@ class Reference(BaseModel):
     url: Optional[str] = None
 
 
+class PublishedVersion(BaseModel):
+    """A peer-reviewed / venue-published version of a paper the bibliography
+    cites as an arXiv preprint.
+
+    A fact about the *paper*, recorded on its :class:`CanonicalRecord` from
+    whichever source knew it (Semantic Scholar's merged record, arXiv's own
+    journal-DOI field, or a Crossref / OpenAlex venue record). Advisory only:
+    the Hygiene section lists it so the author can decide whether to cite the
+    published version instead.
+    """
+
+    venue: Optional[str] = None
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    url: Optional[str] = None
+    source: str = ""  # which API supplied it
+
+
 class CanonicalRecord(BaseModel):
     """A reference resolved against an external scholarly API."""
 
@@ -66,6 +84,19 @@ class CanonicalRecord(BaseModel):
     abstract: Optional[str] = None
     open_access_pdf_url: Optional[str] = None
     is_retracted: bool = False
+    # Set when the record was accepted as a *weak* match: a title search whose
+    # title and author surnames matched the bibliography entry but whose year
+    # was outside the resolver's tolerance, and no source produced a strong
+    # match. Rendered wherever the record is shown so the discrepancy is never
+    # silent. ``None`` for strong (identifier or year-compatible) matches.
+    match_note: Optional[str] = None
+    # Outdated-arXiv-citation check. ``published_version_checked`` is True once a
+    # definitive determination was made (found, or a source that would know says
+    # there is none); False on records cached before this field existed and when
+    # the follow-up lookup failed transiently — the resolver re-checks those on
+    # the next run rather than treating "unknown" as "none".
+    published_version: Optional[PublishedVersion] = None
+    published_version_checked: bool = False
 
 
 class ResolutionStatus(str, Enum):
@@ -87,6 +118,11 @@ class Resolution(BaseModel):
 
     status: ResolutionStatus
     record: Optional[CanonicalRecord] = None
+    # Title-search hits the resolver saw but rejected (year outside tolerance with
+    # no author overlap, or similar). Populated only when ``record`` is None so a
+    # ghost verdict can say what it *did* find — a real paper the bibliography has
+    # the wrong year for looks identical to a fabrication otherwise.
+    near_misses: list[str] = Field(default_factory=list)
 
 
 class ArtifactStatus(str, Enum):
@@ -408,6 +444,11 @@ class CoverageReport(BaseModel):
     # OpenReview enrichment (U8) could not complete (login/API failure). A no-creds
     # skip is NOT degradation — the feature is simply off.
     openreview_degraded: bool = False
+    # arXiv-cited entries whose published-version follow-up (Semantic Scholar by
+    # arXiv ID) failed transiently. Disclosed in the coverage section; NOT a
+    # coverage gap for the exit code — the check is an enrichment, and the record
+    # stays un-checked in the cache so the next run retries it.
+    published_version_unchecked: int = 0
     # Hard desk-reject blockers for ``--gate`` (U3): residual-identity (U2) plus
     # blocker-severity submission findings. Populated every run; the CLI only acts
     # on it (exit code 4, which outranks the coverage-gap exit 3) when ``--gate``

@@ -13,6 +13,8 @@ It is built on top of [PaperQA2](https://github.com/Future-House/paper-qa) for P
 - **Ghost citations** — bibliography entries that resolve to no canonical record anywhere.
 - **Misattributed citations** — the resolved target does not support the surrounding claim.
 - **Retracted citations** — OpenAlex's `is_retracted` flag (mirrors Retraction Watch).
+- **Wrong-paper matches** — a same-title record with the wrong year (a reprint or mirror of a well-known paper) is never silently accepted: identifier lookups run before any title search, search hits are year-gated against the `.bib`, and a title+author-only match is surfaced as a *weak match* rather than passed off as canonical.
+- **Outdated arXiv citations** — entries that cite the preprint of a paper with a published version, with the venue and DOI to switch to (from Semantic Scholar's merged record, arXiv's registered journal DOI, a DBLP search, or — only when Semantic Scholar is unavailable — a tightly gated Crossref search).
 - **Abstract-only verifications** of load-bearing claims, surfaced honestly so you can read the cited paper yourself.
 
 **Source hygiene** (`.tex` input)
@@ -57,7 +59,7 @@ The CLI auto-loads these keys from a `.env` in the current directory, the input 
 |---|---|
 | `ANTHROPIC_API_KEY` | **Required** unless you use `--auth oauth`. Metered Anthropic API credits. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Alternative to the above: routes spend to a Claude subscription. Needs the `[oauth]` extra and the `claude` CLI. |
-| `S2_API_KEY` | Optional. Higher Semantic Scholar rate limits. |
+| `S2_API_KEY` | Optional but strongly recommended (free). The keyless Semantic Scholar pool rate-limits into the circuit breaker within a few calls, which also takes out the published-version check's primary source. |
 | `OPENALEX_API_KEY` | Optional. Keyed OpenAlex access. |
 | `PREREVIEW_MAILTO` | Optional. Joins the Crossref / OpenAlex / Unpaywall polite pools (`--mailto` overrides). |
 | `HF_TOKEN` | Optional. Lets `--artifacts` probe gated or private Hugging Face artifacts. |
@@ -160,7 +162,7 @@ Models & plumbing
 
 1. **Ingest.** Parse the PDF (PaperQA2 + heuristics + one LLM bibliography pass) or the `.tex`/`.bib` natively. Record every in-text citation with its surrounding sentence(s). On `.tex`, run the deterministic guards: hygiene, checklist, anonymization, submission readiness, numerical sanity.
 2. **Probe.** Check link health; optionally check artifact existence (`--artifacts`).
-3. **Resolve.** For each bibliography entry, query Crossref → Semantic Scholar → arXiv → OpenAlex until a canonical record is returned, then a follow-up OpenAlex retraction lookup. Outcomes are three-state (resolved / terminal miss / degraded) with retries and a per-source circuit breaker, so an API outage is disclosed as degradation rather than reported as a ghost citation.
+3. **Resolve.** For each bibliography entry, identifier lookups first — Crossref / Semantic Scholar / OpenAlex by DOI, Semantic Scholar / arXiv by arXiv ID — then, only if none hit, title searches in the same source order (Crossref → Semantic Scholar → arXiv → OpenAlex). A title-search hit must be within ±2 years of the `.bib` entry; a title+author match with the wrong year is kept as a *weak* candidate and accepted, with a visible note, only when nothing better exists. Follow-ups on every resolved record: an OpenAlex retraction lookup by DOI and, for arXiv-cited entries, a published-version check. Outcomes are three-state (resolved / terminal miss / degraded) with retries and a per-source circuit breaker, so an API outage is disclosed as degradation rather than reported as a ghost citation — and a ghost verdict names the near-misses the searches did find.
 4. **Verify.** Classify each citation's role, then ask the LLM whether the resolved paper supports the surrounding claim. Verdicts: *supports*, *partially supports*, *does not support*, *abstract too thin to tell*, *target unavailable*, and a distinct *verification unavailable* for infrastructure failure. Optionally enrich with OpenReview decisions (`--openreview`).
 5. **Synthesize.** Opus writes Summary, Strengths, Weaknesses, Questions for the author, and (by default) an adversarial Reviewer-2 pass. Everything else — Overall assessment, Citation issues, every guard section, Coverage & reliability, Methodology — is rendered deterministically from the data, so nothing flagged can be dropped and no metadata can be invented.
 6. **Write.** Markdown next to the input; a previous review is backed up first.
@@ -171,6 +173,7 @@ Review sections, in order: Review coverage & reliability (only when something de
 
 - The LLM is allowed to abstain. *Abstract too thin to tell* is a first-class verdict, not papered over — and infrastructure failure is a separate verdict, never conflated with abstention.
 - Canonical citation metadata (title, authors, year, DOI) only ever comes from Crossref / Semantic Scholar / arXiv / OpenAlex. The LLM only judges whether retrieved text supports a claim.
+- Identifiers beat searches, and searches are year-gated. Same-title records with the wrong year are common (mirror "journals" reprint famous papers, later editions of books), and one such Crossref record was observed out-ranking the real NeurIPS paper. The resolver never silently accepts one: a weak match is labelled as such everywhere the record is shown.
 - Every deterministic check is precision-over-recall and advisory-framed ("verify this", never "you did this"). Only `BLOCKER`-severity findings affect the exit code, and only under `--gate`.
 - The review leads with severity buckets, not a number. LLM reviewers skew generous (>95% accept rates in Keuper 2025), so the 1–10 rating sits behind `--show-rating` and is labeled as secondary.
 - Per-venue facts are data, detectors are generic: adding a venue is a `VenueRules` entry, not code.

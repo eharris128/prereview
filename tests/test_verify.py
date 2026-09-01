@@ -419,3 +419,24 @@ async def test_llm_failure_is_verification_unavailable_not_abstract_thin(cache, 
     async with Verifier(cache=cache) as v:
         r = await v.verify(_cite(), _ref("1"), _res(can), model="x", fetch_cited=False)
     assert r.verdict == Verdict.VERIFICATION_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_ghost_rationale_names_the_resolvers_near_misses(tmp_path):
+    """A real paper with the wrong year in the .bib looks like a ghost; the verdict
+    should say what the title searches found so the author can tell the two apart."""
+    from prereview.cache import Cache
+    from prereview.models import Citation, Reference, Resolution, ResolutionStatus, Verdict
+    from prereview.verify import Verifier
+
+    ref = Reference(ref_id="r", raw_text="x", title="A Toy Paper", authors=["Alice Smith"], year=2016)
+    cit = Citation(ref_id="r", sentence="Toys are great [r].")
+    res = Resolution(
+        status=ResolutionStatus.UNRESOLVED,
+        near_misses=['"A Toy Paper" (1999, Other Journal, doi:10.1/x)'],
+    )
+    async with Verifier(cache=Cache(tmp_path / "c")) as v:
+        out = await v.verify(cit, ref, res, model="anthropic/claude-sonnet-4-6", fetch_cited=False)
+    assert out.verdict == Verdict.TARGET_UNAVAILABLE
+    assert "1999" in out.rationale and "Other Journal" in out.rationale
+    assert "metadata is wrong rather than the paper missing" in out.rationale

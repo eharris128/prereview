@@ -273,13 +273,27 @@ class Verifier:
 
         canonical = resolution.record
         if canonical is None:
+            rationale = (
+                "Reference did not resolve to a record in Crossref, Semantic Scholar, "
+                "arXiv, or OpenAlex."
+            )
+            if resolution.near_misses:
+                # A real paper with a wrong year in the .bib looks exactly like a
+                # fabrication to the resolver; say what the title searches did find.
+                shown = "; ".join(resolution.near_misses[:3])
+                rationale += (
+                    f" Title searches did return {shown} — rejected because the year is "
+                    "incompatible with the bibliography entry and the authors do not "
+                    "overlap. If one of these is the intended paper, the entry's metadata "
+                    "is wrong rather than the paper missing."
+                )
             return VerificationResult(
                 ref_id=reference.ref_id,
                 citation=citation,
                 reference=reference,
                 canonical=None,
                 verdict=Verdict.TARGET_UNAVAILABLE,
-                rationale="Reference did not resolve to a record in Crossref, Semantic Scholar, arXiv, or OpenAlex.",
+                rationale=rationale,
                 abstract_only=True,
             )
 
