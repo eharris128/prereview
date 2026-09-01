@@ -1,8 +1,8 @@
 # Contributing to prereview
 
-Thanks for considering a contribution. `prereview` has a deliberately narrow mission —
+Thanks for considering a contribution. `prereview` has a deliberately narrow mission:
 **verify the citations the author already made, and catch the mechanically-detectable
-problems that get a paper desk-rejected** — and the guidance below exists mostly to keep
+problems that get a paper desk-rejected**. The guidance below exists mostly to keep
 it that way. Read [ROADMAP.md](./ROADMAP.md) first: it lists what has shipped, what is
 next, what was considered and declined, and what is out of scope. A change that lands in
 the *out of scope* list needs a ROADMAP discussion before code.

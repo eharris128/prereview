@@ -1,6 +1,6 @@
 # prereview
 
-AI-assisted pre-submission review of academic preprints, with **verification of every cited reference** as the defining feature — plus a set of deterministic desk-reject guards that run on the `.tex` source.
+AI-assisted pre-submission review of academic preprints, with **verification of every cited reference** as the defining feature, plus a set of deterministic desk-reject guards that run on the `.tex` source.
 
 `prereview` reads a draft (PDF, or `.tex` + `.bib`), parses every in-text citation and its bibliography entry, resolves each entry against Crossref / Semantic Scholar / arXiv / OpenAlex, judges whether the resolved paper actually supports the surrounding claim, runs a battery of mechanical source-level checks, and writes one structured Markdown review next to the input.
 
@@ -10,11 +10,11 @@ The pipeline is deliberately plain: pypdf for PDF text, the bibliographic APIs a
 
 **Citations (the core)**
 
-- **Ghost citations** — bibliography entries that resolve to no canonical record anywhere.
-- **Misattributed citations** — the resolved target does not support the surrounding claim.
-- **Retracted citations** — OpenAlex's `is_retracted` flag (mirrors Retraction Watch).
-- **Wrong-paper matches** — a same-title record with the wrong year (a reprint or mirror of a well-known paper) is never silently accepted: identifier lookups run before any title search, search hits are year-gated against the `.bib`, and a title+author-only match is surfaced as a *weak match* rather than passed off as canonical.
-- **Outdated arXiv citations** — entries that cite the preprint of a paper with a published version, with the venue and DOI to switch to (from Semantic Scholar's merged record, arXiv's registered journal DOI, a DBLP search, or — only when Semantic Scholar is unavailable — a tightly gated Crossref search).
+- **Ghost citations**: bibliography entries that resolve to no canonical record anywhere.
+- **Misattributed citations**: the resolved target does not support the surrounding claim.
+- **Retracted citations**: OpenAlex's `is_retracted` flag (mirrors Retraction Watch).
+- **Wrong-paper matches**: a same-title record with the wrong year (a reprint or mirror of a well-known paper) is never silently accepted: identifier lookups run before any title search, search hits are year-gated against the `.bib`, and a title+author-only match is surfaced as a *weak match* rather than passed off as canonical.
+- **Outdated arXiv citations**: entries that cite the preprint of a paper with a published version, with the venue and DOI to switch to (from Semantic Scholar's merged record, arXiv's registered journal DOI, a DBLP search, or a tightly gated Crossref search when Semantic Scholar is unavailable).
 - **Abstract-only verifications** of load-bearing claims, surfaced honestly so you can read the cited paper yourself.
 
 **Source hygiene** (`.tex` input)
@@ -24,15 +24,15 @@ The pipeline is deliberately plain: pypdf for PDF text, the bibliographic APIs a
 
 **Desk-reject guards** (`.tex` input; deterministic, no LLM, advisory-framed)
 
-- **Reproducibility-checklist linter** (AAAI-27 kit format) — unanswered items, answers outside the option set, gate-vs-subitem contradictions, and "yes" answers with no supporting evidence in the paper.
-- **Double-blind anonymization audit** — residual `\author` / `\thanks` / `\email` blocks, "in our previous work [X]", identity-revealing GitHub / homepage URLs, acknowledgments in a submission build, and an opt-in `--authors` surname grep.
-- **Submission readiness** — page limits (PDF only), placeholder or empty title/abstract, color-coded result tables, and checklist completeness, driven by a per-venue rules table (`venue_rules.VENUE_RULES`). The detectors are generic; supporting a venue is a data entry, not code. No venue entry ships in this release, so `--venue` is inactive until one is added (see [CONTRIBUTING](./CONTRIBUTING.md)). The `--abstract-baseline` diff is venue-independent and always available.
-- **ML numerical-sanity pack** — bounded metrics over their ceiling, train/val/test splits that don't sum to the stated total, mean ± std ranges that escape the metric's bounds, prose-vs-table hyperparameter drift, and abstract headline deltas no results table backs up. Precision over recall: every detector skips when unsure.
+- **Reproducibility-checklist linter** (AAAI-27 kit format): unanswered items, answers outside the option set, gate-vs-subitem contradictions, and "yes" answers with no supporting evidence in the paper.
+- **Double-blind anonymization audit**: residual `\author` / `\thanks` / `\email` blocks, "in our previous work [X]", identity-revealing GitHub / homepage URLs, acknowledgments in a submission build, and an opt-in `--authors` surname grep.
+- **Submission readiness**: page limits (PDF only), placeholder or empty title/abstract, color-coded result tables, and checklist completeness, driven by a per-venue rules table (`venue_rules.VENUE_RULES`). The detectors are generic; supporting a venue is a data entry, not code. No venue entry ships in this release, so `--venue` is inactive until one is added (see [CONTRIBUTING](./CONTRIBUTING.md)). The `--abstract-baseline` diff is venue-independent and always available.
+- **ML numerical-sanity pack**: bounded metrics over their ceiling, train/val/test splits that don't sum to the stated total, mean ± std ranges that escape the metric's bounds, prose-vs-table hyperparameter drift, and abstract headline deltas no results table backs up. Precision over recall: every detector skips when unsure.
 
 **Opt-in network enrichments**
 
-- `--artifacts` — do the claimed Hugging Face models/datasets and GitHub repos actually exist?
-- `--openreview` — accept/reject decision and rating distribution for cited papers that are on OpenReview.
+- `--artifacts`: do the claimed Hugging Face models/datasets and GitHub repos actually exist?
+- `--openreview`: accept/reject decision and rating distribution for cited papers that are on OpenReview.
 
 ## What it does not do
 
@@ -77,11 +77,11 @@ claude --version            # must resolve
 prereview draft.tex --auth oauth
 ```
 
-`--auth oauth` does not require the token variable at all — the CLI authenticates from
+`--auth oauth` does not require the token variable at all: the CLI authenticates from
 `$CLAUDE_CODE_OAUTH_TOKEN` *or* an interactive `claude login`, so a machine already
 logged into Claude Code needs no token minted. `--auth auto` (the default) is stricter:
 it picks the OAuth path only when `$CLAUDE_CODE_OAUTH_TOKEN` is set *and* the path is
-usable, otherwise falling back to `ANTHROPIC_API_KEY` — so the backend never flips on
+usable, otherwise falling back to `ANTHROPIC_API_KEY`, so the backend never flips on
 the strength of a stored login you forgot about. Pin one explicitly when both are set,
 which is common under secret-injection wrappers.
 
@@ -92,7 +92,7 @@ model call per citation plus a few, so a 50-reference paper is 50+ calls.
 
 ```bash
 prereview draft.pdf                       # heuristic PDF parse + LLM bibliography parse
-prereview manuscript.tex                  # native .tex/.bib parse — more reliable
+prereview manuscript.tex                  # native .tex/.bib parse, more reliable
 prereview manuscript.tex --bib refs.bib   # explicit bibliography path
 ```
 
@@ -117,7 +117,7 @@ Checks (on by default for .tex unless noted)
   --authors "A,B"          Extra anonymization check: grep the body for these surnames.
   --no-numeric             Skip the ML numerical-sanity pack.
   --venue ID               Venue whose submission rules to check (desk-reject guard).
-                           Default: none — venue-specific checks are skipped. Venues
+                           Default: none. Venue-specific checks are skipped. Venues
                            are data entries in venue_rules.VENUE_RULES.
   --abstract-baseline PATH (.tex) Snapshot the abstract on first run; flag later runs
                            whose abstract changed substantially. Works without --venue.
@@ -129,7 +129,7 @@ Checks (on by default for .tex unless noted)
 Review
   --no-reviewer2           Skip the adversarial Reviewer-2 pass (one extra Opus call).
   --show-rating            Include the LLM 1–10 rating, with a generosity caveat.
-                           Default: off — the review leads with severity buckets.
+                           Default: off. The review leads with severity buckets.
 
 Models & plumbing
   --auth {auto,api-key,oauth}
@@ -153,25 +153,25 @@ Models & plumbing
 | Code | Meaning |
 |---|---|
 | 0 | Ran clean and complete. Honest negative verdicts (does-not-support, genuine ghosts) still exit 0. |
-| 1 | Failed — the review was not written or is incomplete. |
+| 1 | Failed: the review was not written or is incomplete. |
 | 2 | Usage error (bad flag, unknown `--venue`, missing input). |
-| 3 | Completed with coverage gaps — a citation could not be checked because of infrastructure, or the prose pass degraded. See *Review coverage & reliability* in the output. |
+| 3 | Completed with coverage gaps: a citation could not be checked because of infrastructure, or the prose pass degraded. See *Review coverage & reliability* in the output. |
 | 4 | `--gate` tripped on a hard desk-reject blocker (outranks 3). |
 
 ## Pipeline
 
 1. **Ingest.** Parse the PDF (pypdf text extraction + heuristics + one LLM bibliography pass) or the `.tex`/`.bib` natively. Record every in-text citation with its surrounding sentence(s). On `.tex`, run the deterministic guards: hygiene, checklist, anonymization, submission readiness, numerical sanity.
 2. **Probe.** Check link health; optionally check artifact existence (`--artifacts`).
-3. **Resolve.** For each bibliography entry, identifier lookups first — Crossref / Semantic Scholar / OpenAlex by DOI, Semantic Scholar / arXiv by arXiv ID — then, only if none hit, title searches in the same source order (Crossref → Semantic Scholar → arXiv → OpenAlex). A title-search hit must be within ±2 years of the `.bib` entry; a title+author match with the wrong year is kept as a *weak* candidate and accepted, with a visible note, only when nothing better exists. Follow-ups on every resolved record: an OpenAlex retraction lookup by DOI and, for arXiv-cited entries, a published-version check. Outcomes are three-state (resolved / terminal miss / degraded) with retries and a per-source circuit breaker, so an API outage is disclosed as degradation rather than reported as a ghost citation — and a ghost verdict names the near-misses the searches did find.
+3. **Resolve.** For each bibliography entry, identifier lookups first (Crossref / Semantic Scholar / OpenAlex by DOI, Semantic Scholar / arXiv by arXiv ID), then, only if none hit, title searches in the same source order (Crossref → Semantic Scholar → arXiv → OpenAlex). A title-search hit must be within ±2 years of the `.bib` entry; a title+author match with the wrong year is kept as a *weak* candidate and accepted, with a visible note, only when nothing better exists. Follow-ups on every resolved record: an OpenAlex retraction lookup by DOI and, for arXiv-cited entries, a published-version check. Outcomes are three-state (resolved / terminal miss / degraded) with retries and a per-source circuit breaker, so an API outage is disclosed as degradation rather than reported as a ghost citation, and a ghost verdict names the near-misses the searches did find.
 4. **Verify.** Classify each citation's role, then ask the LLM whether the resolved paper supports the surrounding claim. Verdicts: *supports*, *partially supports*, *does not support*, *abstract too thin to tell*, *target unavailable*, and a distinct *verification unavailable* for infrastructure failure. Optionally enrich with OpenReview decisions (`--openreview`).
-5. **Synthesize.** Opus writes Summary, Strengths, Weaknesses, Questions for the author, and (by default) an adversarial Reviewer-2 pass. Everything else — Overall assessment, Citation issues, every guard section, Coverage & reliability, Methodology — is rendered deterministically from the data, so nothing flagged can be dropped and no metadata can be invented.
+5. **Synthesize.** Opus writes Summary, Strengths, Weaknesses, Questions for the author, and (by default) an adversarial Reviewer-2 pass. Everything else (Overall assessment, Citation issues, every guard section, Coverage & reliability, Methodology) is rendered deterministically from the data, so nothing flagged can be dropped and no metadata can be invented.
 6. **Write.** Markdown next to the input; a previous review is backed up first.
 
-Review sections, in order: Review coverage & reliability (only when something degraded — it leads so you see it first) · Anonymization audit · Submission readiness · Overall assessment (critical / major / minor) · Summary · Strengths · Weaknesses · Reviewer 2 (adversarial) · Citation issues · Hygiene checks · Reproducibility checklist · Numerical sanity · Artifact availability · OpenReview decisions · Questions for the author · Methodology and limits of this review. Guard and enrichment sections appear only when their check ran.
+Review sections, in order: Review coverage & reliability (only when something degraded, and it leads so you see it first) · Anonymization audit · Submission readiness · Overall assessment (critical / major / minor) · Summary · Strengths · Weaknesses · Reviewer 2 (adversarial) · Citation issues · Hygiene checks · Reproducibility checklist · Numerical sanity · Artifact availability · OpenReview decisions · Questions for the author · Methodology and limits of this review. Guard and enrichment sections appear only when their check ran.
 
 ## Design notes
 
-- The LLM is allowed to abstain. *Abstract too thin to tell* is a first-class verdict, not papered over — and infrastructure failure is a separate verdict, never conflated with abstention.
+- The LLM is allowed to abstain. *Abstract too thin to tell* is a first-class verdict, not papered over, and infrastructure failure is a separate verdict, never conflated with abstention.
 - Canonical citation metadata (title, authors, year, DOI) only ever comes from Crossref / Semantic Scholar / arXiv / OpenAlex. The LLM only judges whether retrieved text supports a claim.
 - Identifiers beat searches, and searches are year-gated. Same-title records with the wrong year are common (mirror "journals" reprint famous papers, later editions of books), and one such Crossref record was observed out-ranking the real NeurIPS paper. The resolver never silently accepts one: a weak match is labelled as such everywhere the record is shown.
 - Every deterministic check is precision-over-recall and advisory-framed ("verify this", never "you did this"). Only `BLOCKER`-severity findings affect the exit code, and only under `--gate`.
